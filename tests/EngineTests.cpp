@@ -40,6 +40,8 @@ TEST_CASE ("Null test: default delta IR, wide-open LoCut/HiCut, Mix 100% nulls a
     engine.setHiCutHz (CabConvolutionEngine::hiCutMaxHz);
     engine.setMixProportion (1.0f);
     engine.setLevelDb (0.0f);
+    engine.setBlendProportion (0.0f); // IR A only - IR B's default delta never enters the mix
+    engine.setDistancePercent (CabConvolutionEngine::distanceMinPercent); // "off"
 
     const auto spec = makeTestSpec (2);
     engine.prepare (spec);
@@ -226,14 +228,226 @@ TEST_CASE ("A loaded (non-delta) impulse response measurably changes the output"
     CHECK (maxResidual > nullTestTolerance);
 }
 
+TEST_CASE ("IR Blend at 0% (default) leaves IR B's loaded IR completely unheard", "[dsp][engine][blend]")
+{
+    CabConvolutionEngine engine;
+    engine.setMixProportion (1.0f);
+    engine.setLevelDb (0.0f);
+    engine.setBlendProportion (0.0f);
+
+    const auto spec = makeTestSpec (2);
+    engine.prepare (spec);
+
+    // A drastically different IR loaded into slot B - if Blend = 0% ever let
+    // any of it through, this would be unmissable in the output.
+    juce::AudioBuffer<float> irB (1, 4);
+    irB.setSample (0, 0, 1.0f);
+    irB.setSample (0, 1, -1.0f);
+    irB.setSample (0, 2, 1.0f);
+    irB.setSample (0, 3, -1.0f);
+    engine.setImpulseResponseB (std::move (irB), testSampleRate);
+    engine.prepare (spec); // guarantee the async load is drained/active - see docs/architecture.md
+
+    juce::AudioBuffer<float> reference (2, testBlockSize);
+    TestHelpers::fillWithSine (reference, testSampleRate, testFrequencyHz, 0.5f);
+
+    juce::AudioBuffer<float> processed;
+    processed.makeCopyOf (reference);
+
+    juce::dsp::AudioBlock<float> block (processed);
+    engine.process (block);
+
+    CHECK (TestHelpers::allSamplesFinite (processed));
+
+    for (int channel = 0; channel < reference.getNumChannels(); ++channel)
+    {
+        const auto* refData = reference.getReadPointer (channel);
+        const auto* outData = processed.getReadPointer (channel);
+
+        float maxResidual = 0.0f;
+
+        for (int i = 0; i < testBlockSize; ++i)
+            maxResidual = std::max (maxResidual, std::abs (outData[i] - refData[i]));
+
+        CHECK (maxResidual < nullTestTolerance);
+    }
+}
+
+TEST_CASE ("IR Blend at 100% is driven entirely by IR B, not IR A", "[dsp][engine][blend]")
+{
+    CabConvolutionEngine engine;
+    engine.setMixProportion (1.0f);
+    engine.setLevelDb (0.0f);
+    engine.setBlendProportion (1.0f);
+
+    const auto spec = makeTestSpec (2);
+    engine.prepare (spec);
+
+    // IR A stays the default delta (identity); IR B is a genuinely
+    // different, decaying IR - at Blend = 100% the output must match
+    // processing through IR B alone, not the untouched input.
+    juce::AudioBuffer<float> irB (1, 4);
+    irB.setSample (0, 0, 1.0f);
+    irB.setSample (0, 1, 0.5f);
+    irB.setSample (0, 2, 0.25f);
+    irB.setSample (0, 3, 0.125f);
+    engine.setImpulseResponseB (std::move (irB), testSampleRate);
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> reference (2, testBlockSize);
+    TestHelpers::fillWithSine (reference, testSampleRate, testFrequencyHz, 0.5f);
+
+    juce::AudioBuffer<float> processed;
+    processed.makeCopyOf (reference);
+
+    juce::dsp::AudioBlock<float> block (processed);
+    engine.process (block);
+
+    CHECK (TestHelpers::allSamplesFinite (processed));
+
+    float maxResidual = 0.0f;
+
+    for (int channel = 0; channel < reference.getNumChannels(); ++channel)
+    {
+        const auto* refData = reference.getReadPointer (channel);
+        const auto* outData = processed.getReadPointer (channel);
+
+        for (int i = 0; i < testBlockSize; ++i)
+            maxResidual = std::max (maxResidual, std::abs (outData[i] - refData[i]));
+    }
+
+    // A genuinely different IR B must move the output measurably away from
+    // a pure passthrough of the (untouched, delta-IR-A) input.
+    CHECK (maxResidual > nullTestTolerance);
+}
+
+TEST_CASE ("IR Blend at 50% sits between IR A alone and IR B alone", "[dsp][engine][blend]")
+{
+    const auto measurePeak = [] (float blendProportion)
+    {
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setBlendProportion (blendProportion);
+
+        const auto spec = makeTestSpec (2);
+        engine.prepare (spec);
+
+        // A short IR with a strong first tap - at Blend = 100% the output's
+        // peak should track this tap's gain much more closely than at
+        // Blend = 0% (identity IR A).
+        juce::AudioBuffer<float> irB (1, 2);
+        irB.setSample (0, 0, 0.2f);
+        irB.setSample (0, 1, 0.0f);
+        engine.setImpulseResponseB (std::move (irB), testSampleRate);
+        engine.prepare (spec);
+
+        juce::AudioBuffer<float> buffer (2, testBlockSize);
+        TestHelpers::fillWithSine (buffer, testSampleRate, testFrequencyHz, 0.5f);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        CHECK (TestHelpers::allSamplesFinite (buffer));
+        return TestHelpers::peakAbsolute (buffer);
+    };
+
+    const auto peakAtA = measurePeak (0.0f);
+    const auto peakAtHalf = measurePeak (0.5f);
+    const auto peakAtB = measurePeak (1.0f);
+
+    // IR A is the identity (peak == input peak, 0.5); IR B attenuates
+    // heavily (peak << input peak). The 50% blend must land strictly
+    // between the two.
+    REQUIRE (peakAtB < peakAtA);
+    CHECK (peakAtHalf < peakAtA);
+    CHECK (peakAtHalf > peakAtB);
+}
+
+TEST_CASE ("Distance at 0% (default) is a bit-exact passthrough", "[dsp][engine][distance]")
+{
+    CabConvolutionEngine engine;
+    engine.setMixProportion (1.0f);
+    engine.setLevelDb (0.0f);
+    engine.setDistancePercent (CabConvolutionEngine::distanceMinPercent);
+
+    const auto spec = makeTestSpec (2);
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> reference (2, testBlockSize);
+    TestHelpers::fillWithSine (reference, testSampleRate, testFrequencyHz, 0.5f);
+
+    juce::AudioBuffer<float> processed;
+    processed.makeCopyOf (reference);
+
+    juce::dsp::AudioBlock<float> block (processed);
+    engine.process (block);
+
+    for (int channel = 0; channel < reference.getNumChannels(); ++channel)
+    {
+        const auto* refData = reference.getReadPointer (channel);
+        const auto* outData = processed.getReadPointer (channel);
+
+        float maxResidual = 0.0f;
+
+        for (int i = 0; i < testBlockSize; ++i)
+            maxResidual = std::max (maxResidual, std::abs (outData[i] - refData[i]));
+
+        CHECK (maxResidual < nullTestTolerance);
+    }
+}
+
+TEST_CASE ("Distance at 100% measurably attenuates both low- and high-frequency energy", "[dsp][engine][distance]")
+{
+    const auto measureRms = [] (float distancePercent, double frequencyHz)
+    {
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setDistancePercent (distancePercent);
+
+        const auto spec = makeTestSpec (2);
+        engine.prepare (spec);
+
+        juce::AudioBuffer<float> buffer (2, testBlockSize);
+        TestHelpers::fillWithSine (buffer, testSampleRate, frequencyHz, 0.5f);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        return TestHelpers::rms (buffer);
+    };
+
+    constexpr double lowTestFrequencyHz = 100.0; // near the low-shelf frequency
+    constexpr double highTestFrequencyHz = 15000.0; // well above the high-shelf frequency
+
+    const auto lowRmsOff = measureRms (CabConvolutionEngine::distanceMinPercent, lowTestFrequencyHz);
+    const auto lowRmsFar = measureRms (CabConvolutionEngine::distanceMaxPercent, lowTestFrequencyHz);
+    const auto highRmsOff = measureRms (CabConvolutionEngine::distanceMinPercent, highTestFrequencyHz);
+    const auto highRmsFar = measureRms (CabConvolutionEngine::distanceMaxPercent, highTestFrequencyHz);
+
+    REQUIRE (lowRmsOff > 0.0);
+    REQUIRE (highRmsOff > 0.0);
+    CHECK (lowRmsFar < lowRmsOff);
+    CHECK (highRmsFar < highRmsOff);
+}
+
 TEST_CASE ("reset() clears filter/convolution/mixer state without crashing", "[dsp][engine]")
 {
     CabConvolutionEngine engine;
     engine.setLoCutHz (300.0f);
     engine.setHiCutHz (3000.0f);
     engine.setMixProportion (1.0f);
+    engine.setBlendProportion (0.5f);
+    engine.setDistancePercent (50.0f);
 
     const auto spec = makeTestSpec (2);
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> irB (1, 4);
+    irB.setSample (0, 0, 1.0f);
+    irB.setSample (0, 1, 0.5f);
+    engine.setImpulseResponseB (std::move (irB), testSampleRate);
     engine.prepare (spec);
 
     juce::AudioBuffer<float> buffer (2, testBlockSize);
