@@ -29,10 +29,24 @@ namespace ParamIDs
     // Output trim, applied after the dry/wet mix.
     inline constexpr auto level = "level";
 
+    // IR Blend: crossfades between IR A (the original slot, loaded via
+    // "Load IR...") and IR B (loaded via "Load IR B..."). Default 0% (IR A
+    // only) is numerically identical to the v0.1 single-IR signal path, so
+    // adding this parameter doesn't change any existing preset's sound.
+    inline constexpr auto irBlend = "irBlend";
+
+    // Distance: simulated mic-to-cab distance. Default 0% is an explicit
+    // "off" position (see CabConvolutionEngine's bypass-at-the-extreme
+    // pattern), so adding this parameter doesn't change any existing
+    // preset's sound either.
+    inline constexpr auto micDistance = "micDistance";
+
     // NOT an APVTS parameter: the currently loaded IR file's absolute path is
     // stored as a plain property directly on apvts.state (see
     // PluginProcessor::loadImpulseResponseFromFile/getStateInformation), so
     // it round-trips through session/preset state without needing a float
-    // parameter to represent a file path.
+    // parameter to represent a file path. irFilePathBProperty is the
+    // equivalent for IR B.
     inline constexpr auto irFilePathProperty = "irFilePath";
+    inline constexpr auto irFilePathBProperty = "irFilePathB";
 }

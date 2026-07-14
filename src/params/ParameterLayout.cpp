@@ -51,6 +51,27 @@ namespace nave
             juce::AudioParameterFloatAttributes().withLabel ("Hz")));
 
         //======================================================================
+        // IR Blend: crossfades between IR A and IR B. Default 0% (IR A only)
+        // is bit-identical to the v0.1 single-IR signal path.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::irBlend, 1 },
+            "IR Blend",
+            juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        //======================================================================
+        // Distance: simulated mic-to-cab distance. The default (its range
+        // minimum) is CabConvolutionEngine's explicit "off" position - see
+        // CabConvolutionEngine.h for the bypass contract.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::micDistance, 1 },
+            "Distance",
+            juce::NormalisableRange<float> (CabConvolutionEngine::distanceMinPercent, CabConvolutionEngine::distanceMaxPercent, 0.1f),
+            CabConvolutionEngine::distanceMinPercent,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        //======================================================================
         // Mix: dry/wet. Default 100% (fully wet) - a cabinet IR is normally
         // run fully in the signal path, not blended with the raw DI.
         layout.add (std::make_unique<juce::AudioParameterFloat> (

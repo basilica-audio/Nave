@@ -30,12 +30,16 @@ private:
 
     void configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText);
     void updateIrLabel();
+    void updateIrLabelB();
     void chooseImpulseResponseFile();
+    void chooseImpulseResponseFileB();
 
     NaveAudioProcessor& audioProcessor;
 
     Knob loCutKnob;
     Knob hiCutKnob;
+    Knob blendKnob;
+    Knob distanceKnob;
     Knob mixKnob;
     Knob levelKnob;
 
@@ -43,7 +47,12 @@ private:
     juce::TextButton loadIrButton { "Load IR..." };
     juce::TextButton defaultIrButton { "Default" };
 
+    juce::Label irNameLabelB;
+    juce::TextButton loadIrButtonB { "Load IR B..." };
+    juce::TextButton defaultIrButtonB { "Default" };
+
     std::unique_ptr<juce::FileChooser> activeFileChooser;
+    std::unique_ptr<juce::FileChooser> activeFileChooserB;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NaveAudioProcessorEditor)
 };

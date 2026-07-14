@@ -57,16 +57,28 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     SECTION ("all documented parameter IDs resolve")
     {
         static constexpr const char* allIds[] = {
-            ParamIDs::loCut, ParamIDs::hiCut, ParamIDs::mix, ParamIDs::level,
+            ParamIDs::loCut, ParamIDs::hiCut, ParamIDs::irBlend, ParamIDs::micDistance, ParamIDs::mix, ParamIDs::level,
         };
 
         for (const auto* id : allIds)
             CHECK (apvts.getParameter (id) != nullptr);
     }
 
-    SECTION ("total parameter count matches the v0.1 layout")
+    SECTION ("total parameter count matches the current layout")
     {
-        CHECK (apvts.processor.getParameters().size() == 4);
+        CHECK (apvts.processor.getParameters().size() == 6);
+    }
+
+    SECTION ("IR Blend: defaults to IR A only (0%) and covers its documented range")
+    {
+        checkFloatDefault (apvts, ParamIDs::irBlend, 0.0f);
+        checkFloatRange (apvts, ParamIDs::irBlend, 0.0f, 100.0f);
+    }
+
+    SECTION ("Distance: defaults to its minimum (the bypassed/off position) and covers its documented range")
+    {
+        checkFloatDefault (apvts, ParamIDs::micDistance, CabConvolutionEngine::distanceMinPercent);
+        checkFloatRange (apvts, ParamIDs::micDistance, CabConvolutionEngine::distanceMinPercent, CabConvolutionEngine::distanceMaxPercent);
     }
 
     SECTION ("LoCut: defaults to its minimum (the bypassed/off position) and covers its documented range")
@@ -96,5 +108,6 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     SECTION ("No IR file path is set on a freshly constructed processor")
     {
         CHECK (processor.getCurrentIrFilePath().isEmpty());
+        CHECK (processor.getCurrentIrFilePathB().isEmpty());
     }
 }

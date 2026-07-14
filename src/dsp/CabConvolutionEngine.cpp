@@ -1,4 +1,5 @@
 #include "CabConvolutionEngine.h"
+#include "IrAlignment.h"
 
 namespace
 {
@@ -38,17 +39,30 @@ void CabConvolutionEngine::prepare (const juce::dsp::ProcessSpec& spec)
     // change, etc.) juce::dsp::Convolution retains and automatically
     // re-resamples whatever IR was most recently loaded, so nothing further
     // needs to be done here - see the class-level docs on
-    // juce::dsp::Convolution::prepare() for this contract.
+    // juce::dsp::Convolution::prepare() for this contract. Same story for
+    // slot B.
     if (! anyImpulseResponseLoaded)
         loadDefaultImpulseResponse();
+
+    if (! anyImpulseResponseBLoaded)
+        loadDefaultImpulseResponseB();
 
     // Per juce::dsp::Convolution's documented contract: loadImpulseResponse()
     // must be called *before* prepare() for that IR to be guaranteed active
     // during the very first process() call.
     convolution.prepare (spec);
+    convolutionB.prepare (spec);
 
     loCutFilter.prepare (spec);
     hiCutFilter.prepare (spec);
+    distanceLowShelfFilter.prepare (spec);
+    distanceHighShelfFilter.prepare (spec);
+
+    // Not real-time safe (allocates) - fine here, prepare() is never called
+    // from the audio thread. Never resized again in process().
+    scratchBuffer.setSize (juce::jmax (1, numChannelsPrepared),
+                            static_cast<int> (spec.maximumBlockSize),
+                            false, false, true);
 
     // Prime the target gain from lastLevelDb *before* prepare() (which
     // internally calls reset(), snapping current == target) - otherwise a
@@ -60,7 +74,11 @@ void CabConvolutionEngine::prepare (const juce::dsp::ProcessSpec& spec)
 
     dryWetMixer.prepare (spec);
 
-    latencySamples = convolution.getLatency();
+    // Both convolution slots always use the same (default, zero-latency)
+    // configuration, so in practice these are always equal - computed
+    // generically via jmax so the dry path stays correctly compensated even
+    // if a slot's configuration ever changes independently in future.
+    latencySamples = juce::jmax (convolution.getLatency(), convolutionB.getLatency());
     dryWetMixer.setWetLatency (static_cast<float> (latencySamples));
 
     // juce::dsp::DryWetMixer defaults its internal mix to fully wet (1.0)
@@ -83,6 +101,10 @@ void CabConvolutionEngine::prepare (const juce::dsp::ProcessSpec& spec)
     hiCutFrequencySmoothed.setCurrentAndTargetValue (lastHiCutHz);
     mixSmoothed.reset (sampleRate, smoothingTimeSeconds);
     mixSmoothed.setCurrentAndTargetValue (lastMixProportion);
+    blendSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    blendSmoothed.setCurrentAndTargetValue (lastBlendProportion);
+    distanceSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    distanceSmoothed.setCurrentAndTargetValue (lastDistancePercent);
 
     reset();
 
@@ -95,15 +117,28 @@ void CabConvolutionEngine::prepare (const juce::dsp::ProcessSpec& spec)
     *hiCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass (
         sampleRate, clampBelowNyquist (lastHiCutHz, sampleRate), filterQ);
 
+    const auto normalisedDistance = (lastDistancePercent - distanceMinPercent)
+                                     / (distanceMaxPercent - distanceMinPercent);
+    *distanceLowShelfFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
+        sampleRate, distanceLowShelfFrequencyHz, filterQ,
+        juce::Decibels::decibelsToGain (normalisedDistance * distanceLowShelfMaxCutDb));
+    *distanceHighShelfFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+        sampleRate, distanceHighShelfFrequencyHz, filterQ,
+        juce::Decibels::decibelsToGain (normalisedDistance * distanceHighShelfMaxCutDb));
+
     loCutEngagedPreviously = lastLoCutHz > loCutMinHz + bypassEpsilonHz;
     hiCutEngagedPreviously = lastHiCutHz < hiCutMaxHz - bypassEpsilonHz;
+    distanceEngagedPreviously = lastDistancePercent > distanceMinPercent + distanceBypassEpsilonPercent;
 }
 
 void CabConvolutionEngine::reset()
 {
     convolution.reset();
+    convolutionB.reset();
     loCutFilter.reset();
     hiCutFilter.reset();
+    distanceLowShelfFilter.reset();
+    distanceHighShelfFilter.reset();
     outputLevel.reset();
     dryWetMixer.reset();
 }
@@ -132,8 +167,26 @@ void CabConvolutionEngine::setLevelDb (float newLevelDb)
     outputLevel.setGainDecibels (newLevelDb);
 }
 
+void CabConvolutionEngine::setBlendProportion (float newProportion01)
+{
+    lastBlendProportion = newProportion01;
+    blendSmoothed.setTargetValue (newProportion01);
+}
+
+void CabConvolutionEngine::setDistancePercent (float newDistancePercent)
+{
+    lastDistancePercent = newDistancePercent;
+    distanceSmoothed.setTargetValue (newDistancePercent);
+}
+
 void CabConvolutionEngine::setImpulseResponse (juce::AudioBuffer<float> irBuffer, double irSampleRate)
 {
+    // Recorded before the buffer is moved from below: this becomes the
+    // reference onset that a subsequently loaded IR B is phase-aligned
+    // against (see setImpulseResponseB()).
+    lastIrAOnsetSample = IrAlignment::detectOnsetSample (irBuffer);
+    lastIrASampleRate = irSampleRate;
+
     const auto isStereo = (irBuffer.getNumChannels() >= 2 && numChannelsPrepared >= 2)
                                ? juce::dsp::Convolution::Stereo::yes
                                : juce::dsp::Convolution::Stereo::no;
@@ -152,6 +205,11 @@ void CabConvolutionEngine::setImpulseResponse (juce::AudioBuffer<float> irBuffer
 
 void CabConvolutionEngine::loadDefaultImpulseResponse()
 {
+    // The delta IR's onset is trivially sample 0 - reset the phase-
+    // alignment reference to match, at the engine's current sample rate.
+    lastIrAOnsetSample = 0;
+    lastIrASampleRate = sampleRate;
+
     // Normalise::no is essential here: normalising a unit impulse would
     // rescale it away from exact unity gain (JUCE's normalisation targets a
     // fixed reference energy, not "leave amplitude 1.0 alone"), which would
@@ -165,6 +223,39 @@ void CabConvolutionEngine::loadDefaultImpulseResponse()
     anyImpulseResponseLoaded = true;
 }
 
+void CabConvolutionEngine::setImpulseResponseB (juce::AudioBuffer<float> irBuffer, double irSampleRate)
+{
+    // Inter-IR phase alignment: shift IR B's onset to match IR A's most
+    // recently recorded onset, so blending the two convolution outputs
+    // doesn't introduce comb-filtering from a timing mismatch between their
+    // transients (see IrAlignment.h and docs/architecture.md).
+    auto alignedIrBuffer = IrAlignment::alignOnsetToReference (
+        irBuffer, irSampleRate, lastIrAOnsetSample, lastIrASampleRate);
+
+    const auto isStereo = (alignedIrBuffer.getNumChannels() >= 2 && numChannelsPrepared >= 2)
+                               ? juce::dsp::Convolution::Stereo::yes
+                               : juce::dsp::Convolution::Stereo::no;
+
+    convolutionB.loadImpulseResponse (std::move (alignedIrBuffer),
+                                       irSampleRate,
+                                       isStereo,
+                                       juce::dsp::Convolution::Trim::no,
+                                       juce::dsp::Convolution::Normalise::yes);
+
+    anyImpulseResponseBLoaded = true;
+}
+
+void CabConvolutionEngine::loadDefaultImpulseResponseB()
+{
+    convolutionB.loadImpulseResponse (makeDeltaImpulseResponse(),
+                                       sampleRate,
+                                       juce::dsp::Convolution::Stereo::no,
+                                       juce::dsp::Convolution::Trim::no,
+                                       juce::dsp::Convolution::Normalise::no);
+
+    anyImpulseResponseBLoaded = true;
+}
+
 void CabConvolutionEngine::process (juce::dsp::AudioBlock<float>& block)
 {
     const auto numSamples = block.getNumSamples();
@@ -172,20 +263,34 @@ void CabConvolutionEngine::process (juce::dsp::AudioBlock<float>& block)
     if (numSamples == 0)
         return;
 
+    const auto numSamplesInt = static_cast<int> (numSamples);
+
     // Coefficient recomputation involves trig calls (tan/cos), so filter
     // frequencies are smoothed and re-derived once per block rather than
     // per sample - a standard real-time-safe compromise for IIR filters.
-    const auto loCutHz = loCutFrequencySmoothed.skip (static_cast<int> (numSamples));
-    const auto hiCutHz = hiCutFrequencySmoothed.skip (static_cast<int> (numSamples));
-    const auto wetMix = mixSmoothed.skip (static_cast<int> (numSamples));
+    const auto loCutHz = loCutFrequencySmoothed.skip (numSamplesInt);
+    const auto hiCutHz = hiCutFrequencySmoothed.skip (numSamplesInt);
+    const auto wetMix = mixSmoothed.skip (numSamplesInt);
+    const auto blendProportion = blendSmoothed.skip (numSamplesInt);
+    const auto distancePercent = distanceSmoothed.skip (numSamplesInt);
 
-    // LoCut at its minimum and HiCut at its maximum are each an explicit
-    // "off" position: skip the IIR processing entirely (rather than merely
-    // computing an extreme-but-active cutoff) so the default/wide-open state
-    // is a true bit-accurate passthrough, not just a filter with negligible
-    // colouration. This is what tests/EngineTests.cpp's null test relies on.
+    // LoCut at its minimum, HiCut at its maximum, and Distance at its
+    // minimum are each an explicit "off" position: skip the relevant IIR
+    // processing entirely (rather than merely computing an extreme-but-
+    // active cutoff/gain) so the default/wide-open state is a true
+    // bit-accurate passthrough, not just negligible colouration. This is
+    // what tests/EngineTests.cpp's null tests rely on.
     const bool loCutBypassed = loCutHz <= loCutMinHz + bypassEpsilonHz;
     const bool hiCutBypassed = hiCutHz >= hiCutMaxHz - bypassEpsilonHz;
+    const bool distanceBypassed = distancePercent <= distanceMinPercent + distanceBypassEpsilonPercent;
+
+    // Defensive fallback: scratchBuffer is sized to maximumBlockSize in
+    // prepare(), so a host that (against its own promise) sends a larger
+    // block here would overrun it. Rather than risk that, Blend is simply
+    // treated as disengaged for that one block (falls back to IR A only) -
+    // safer than allocating or writing out of bounds on the audio thread.
+    const bool scratchLargeEnough = numSamples <= static_cast<size_t> (scratchBuffer.getNumSamples());
+    const bool blendEngaged = blendProportion > blendBypassEpsilon && scratchLargeEnough;
 
     // Reset a filter's IIR state exactly when it transitions from bypassed
     // to engaged, so it starts from a clean, predictable state rather than
@@ -197,14 +302,33 @@ void CabConvolutionEngine::process (juce::dsp::AudioBlock<float>& block)
     if (! hiCutBypassed && ! hiCutEngagedPreviously)
         hiCutFilter.reset();
 
+    if (! distanceBypassed && ! distanceEngagedPreviously)
+    {
+        distanceLowShelfFilter.reset();
+        distanceHighShelfFilter.reset();
+    }
+
     loCutEngagedPreviously = ! loCutBypassed;
     hiCutEngagedPreviously = ! hiCutBypassed;
+    distanceEngagedPreviously = ! distanceBypassed;
 
     if (! loCutBypassed)
         *loCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighPass (sampleRate, clampBelowNyquist (loCutHz, sampleRate), filterQ);
 
     if (! hiCutBypassed)
         *hiCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass (sampleRate, clampBelowNyquist (hiCutHz, sampleRate), filterQ);
+
+    if (! distanceBypassed)
+    {
+        const auto normalisedDistance = (distancePercent - distanceMinPercent) / (distanceMaxPercent - distanceMinPercent);
+
+        *distanceLowShelfFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
+            sampleRate, distanceLowShelfFrequencyHz, filterQ,
+            juce::Decibels::decibelsToGain (normalisedDistance * distanceLowShelfMaxCutDb));
+        *distanceHighShelfFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+            sampleRate, distanceHighShelfFrequencyHz, filterQ,
+            juce::Decibels::decibelsToGain (normalisedDistance * distanceHighShelfMaxCutDb));
+    }
 
     dryWetMixer.setWetMixProportion (wetMix);
 
@@ -216,7 +340,50 @@ void CabConvolutionEngine::process (juce::dsp::AudioBlock<float>& block)
     // time-aligned with the wet path below, whatever that latency is.
     dryWetMixer.pushDrySamples (block);
 
+    // Convolution stage: IR A always runs (needed both standalone and as
+    // the (1 - blend) component of the crossfade below). IR B only runs
+    // when Blend is actually engaged, saving the second convolution's CPU
+    // cost otherwise - the same "skip work that provably can't matter"
+    // pattern LoCut/HiCut/Distance use above.
+    //
+    // IR B must convolve the same original (dry) input as IR A, not IR A's
+    // already-convolved output - so the pre-convolution samples are copied
+    // into scratchBuffer *before* convolution.process() mutates `block` in
+    // place. Getting this ordering wrong would silently turn the "B"
+    // component of the crossfade into IR_B(IR_A(input)), a cascaded double
+    // convolution, instead of the intended IR_B(input).
+    if (blendEngaged)
+    {
+        juce::dsp::AudioBlock<float> scratchBlock (scratchBuffer);
+        auto scratchSub = scratchBlock.getSubBlock (0, numSamples);
+        scratchSub.copyFrom (block);
+    }
+
     convolution.process (context);
+
+    if (blendEngaged)
+    {
+        juce::dsp::AudioBlock<float> scratchBlock (scratchBuffer);
+        auto scratchSub = scratchBlock.getSubBlock (0, numSamples);
+
+        juce::dsp::ProcessContextReplacing<float> contextB (scratchSub);
+        convolutionB.process (contextB);
+
+        for (size_t channel = 0; channel < block.getNumChannels(); ++channel)
+        {
+            auto* a = block.getChannelPointer (channel);
+            const auto* b = scratchSub.getChannelPointer (channel);
+
+            for (size_t sample = 0; sample < numSamples; ++sample)
+                a[sample] = a[sample] * (1.0f - blendProportion) + b[sample] * blendProportion;
+        }
+    }
+
+    if (! distanceBypassed)
+    {
+        distanceLowShelfFilter.process (context);
+        distanceHighShelfFilter.process (context);
+    }
 
     if (! loCutBypassed)
         loCutFilter.process (context);

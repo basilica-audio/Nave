@@ -18,11 +18,15 @@ NaveAudioProcessor::NaveAudioProcessor()
     hiCutHz = apvts.getRawParameterValue (ParamIDs::hiCut);
     mixPercent = apvts.getRawParameterValue (ParamIDs::mix);
     levelDb = apvts.getRawParameterValue (ParamIDs::level);
+    irBlendPercent = apvts.getRawParameterValue (ParamIDs::irBlend);
+    micDistancePercent = apvts.getRawParameterValue (ParamIDs::micDistance);
 
     jassert (loCutHz != nullptr);
     jassert (hiCutHz != nullptr);
     jassert (mixPercent != nullptr);
     jassert (levelDb != nullptr);
+    jassert (irBlendPercent != nullptr);
+    jassert (micDistancePercent != nullptr);
 }
 
 NaveAudioProcessor::~NaveAudioProcessor() = default;
@@ -98,6 +102,8 @@ void NaveAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     engine.setHiCutHz (hiCutHz->load (std::memory_order_relaxed));
     engine.setMixProportion (mixPercent->load (std::memory_order_relaxed) * 0.01f);
     engine.setLevelDb (levelDb->load (std::memory_order_relaxed));
+    engine.setBlendProportion (irBlendPercent->load (std::memory_order_relaxed) * 0.01f);
+    engine.setDistancePercent (micDistancePercent->load (std::memory_order_relaxed));
 
     engine.prepare (spec);
 
@@ -151,6 +157,8 @@ void NaveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     engine.setHiCutHz (hiCutHz->load (std::memory_order_relaxed));
     engine.setMixProportion (mixPercent->load (std::memory_order_relaxed) * 0.01f);
     engine.setLevelDb (levelDb->load (std::memory_order_relaxed));
+    engine.setBlendProportion (irBlendPercent->load (std::memory_order_relaxed) * 0.01f);
+    engine.setDistancePercent (micDistancePercent->load (std::memory_order_relaxed));
 
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);
@@ -219,6 +227,47 @@ juce::String NaveAudioProcessor::getCurrentIrFilePath() const
     return apvts.state.getProperty (ParamIDs::irFilePathProperty, juce::String()).toString();
 }
 
+bool NaveAudioProcessor::loadImpulseResponseFromFileB (const juce::File& irFile)
+{
+    if (! irFile.existsAsFile())
+        return false;
+
+    juce::AudioFormatManager formatManager;
+    formatManager.registerBasicFormats();
+
+    const std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (irFile));
+
+    if (reader == nullptr)
+        return false;
+
+    const auto numChannels = juce::jlimit (1, 2, static_cast<int> (reader->numChannels));
+    const auto numSamples = static_cast<int> (juce::jmin<juce::int64> (reader->lengthInSamples,
+                                                                        static_cast<juce::int64> (std::numeric_limits<int>::max())));
+
+    if (numSamples <= 0)
+        return false;
+
+    juce::AudioBuffer<float> irBuffer (numChannels, numSamples);
+    reader->read (&irBuffer, 0, numSamples, 0, true, true);
+
+    engine.setImpulseResponseB (std::move (irBuffer), reader->sampleRate);
+
+    apvts.state.setProperty (ParamIDs::irFilePathBProperty, irFile.getFullPathName(), nullptr);
+
+    return true;
+}
+
+void NaveAudioProcessor::loadDefaultImpulseResponseB()
+{
+    engine.loadDefaultImpulseResponseB();
+    apvts.state.setProperty (ParamIDs::irFilePathBProperty, juce::String(), nullptr);
+}
+
+juce::String NaveAudioProcessor::getCurrentIrFilePathB() const
+{
+    return apvts.state.getProperty (ParamIDs::irFilePathBProperty, juce::String()).toString();
+}
+
 //==============================================================================
 void NaveAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
@@ -238,7 +287,11 @@ void NaveAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     // setStateInformation() is a session/preset-load operation, never called
     // from the audio thread, so the blocking file I/O in
-    // loadImpulseResponseFromFile() is safe here.
+    // loadImpulseResponseFromFile()/loadImpulseResponseFromFileB() is safe
+    // here. IR A is restored first so it becomes the reference IR B's phase
+    // alignment is computed against (see CabConvolutionEngine::
+    // setImpulseResponseB()), matching how the two are loaded during normal
+    // interactive use (IR A almost always loaded before IR B).
     const auto irPath = getCurrentIrFilePath();
 
     if (irPath.isNotEmpty())
@@ -253,6 +306,22 @@ void NaveAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
     else
     {
         loadDefaultImpulseResponse();
+    }
+
+    const auto irPathB = getCurrentIrFilePathB();
+
+    if (irPathB.isNotEmpty())
+    {
+        const juce::File irFileB (irPathB);
+
+        if (irFileB.existsAsFile())
+            loadImpulseResponseFromFileB (irFileB);
+        else
+            loadDefaultImpulseResponseB(); // stored IR is missing; fall back cleanly
+    }
+    else
+    {
+        loadDefaultImpulseResponseB();
     }
 }
 

@@ -71,6 +71,12 @@ public:
     // thread (editor display) at any time.
     juce::String getCurrentIrFilePath() const;
 
+    // Same three operations as above, for the secondary IR slot (IR B) used
+    // by the IR Blend parameter.
+    bool loadImpulseResponseFromFileB (const juce::File& irFile);
+    void loadDefaultImpulseResponseB();
+    juce::String getCurrentIrFilePathB() const;
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -83,6 +89,8 @@ private:
     std::atomic<float>* hiCutHz = nullptr;
     std::atomic<float>* mixPercent = nullptr;
     std::atomic<float>* levelDb = nullptr;
+    std::atomic<float>* irBlendPercent = nullptr;
+    std::atomic<float>* micDistancePercent = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NaveAudioProcessor)
 };

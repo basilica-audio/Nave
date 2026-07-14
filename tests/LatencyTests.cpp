@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "dsp/CabConvolutionEngine.h"
+#include "params/ParameterIds.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -80,4 +81,48 @@ TEST_CASE ("Latency remains zero after loading a custom (short) IR", "[latency]"
     engine.prepare (spec);
 
     CHECK (engine.getLatencySamples() == 0);
+}
+
+TEST_CASE ("Latency remains zero with IR B loaded and Blend engaged", "[latency]")
+{
+    CabConvolutionEngine engine;
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = 48000.0;
+    spec.maximumBlockSize = 512;
+    spec.numChannels = 2;
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> irA (1, 16);
+    juce::AudioBuffer<float> irB (1, 16);
+
+    for (int i = 0; i < 16; ++i)
+    {
+        irA.setSample (0, i, i == 0 ? 1.0f : 0.0f);
+        irB.setSample (0, i, i == 2 ? 0.5f : 0.0f);
+    }
+
+    engine.setImpulseResponse (std::move (irA), 48000.0);
+    engine.setImpulseResponseB (std::move (irB), 48000.0);
+    engine.setBlendProportion (0.5f);
+
+    // Re-prepare so both loads are guaranteed active.
+    engine.prepare (spec);
+
+    CHECK (engine.getLatencySamples() == 0);
+}
+
+TEST_CASE ("Latency remains zero with Distance engaged", "[latency]")
+{
+    NaveAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+
+    auto* distanceParam = processor.apvts.getParameter (ParamIDs::micDistance);
+    REQUIRE (distanceParam != nullptr);
+    distanceParam->setValueNotifyingHost (distanceParam->convertTo0to1 (CabConvolutionEngine::distanceMaxPercent));
+
+    juce::AudioBuffer<float> buffer (2, 512);
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+
+    CHECK (processor.getLatencySamples() == 0);
 }
