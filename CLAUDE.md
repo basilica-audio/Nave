@@ -1,6 +1,6 @@
 # Nave — cabinet IR loader / convolution (guitar & bass)
 
-Per-repo working memory for Claude Code sessions on this plugin. Part of the **Metal up your ass** symphonic-metal plugin suite (`github.com/basilica-audio`).
+Per-repo working memory for Claude Code sessions on this plugin. Part of the **Basilica Audio** plugin suite — sacred-architecture DSP for heavy music (`github.com/basilica-audio`).
 
 ## What this is
 Nave is the "cabinet IR loader / convolution (guitar & bass)" member of the suite. AU / VST3 / Standalone, JUCE 8.

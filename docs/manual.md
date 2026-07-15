@@ -8,7 +8,7 @@
 
 Nave takes a dry, un-amped instrument signal (a DI guitar or bass track, or the pre-cab output of an amp sim) and convolves it with the impulse response ("IR") of a real (or emulated) speaker cabinet and microphone. In other words: Nave is where a dry, buzzy DI signal becomes something that sounds like it was mic'd off a real cab in a room.
 
-In a symphonic-metal production chain, Nave typically sits **after** distortion/amp-sim processing and **before** EQ/bus processing:
+In a heavy production chain, Nave typically sits **after** distortion/amp-sim processing and **before** EQ/bus processing:
 
 ```
 DI guitar/bass -> amp sim / preamp distortion -> Nave (cab IR) -> EQ / compression -> mix bus
