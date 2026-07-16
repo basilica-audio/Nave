@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`convolutionB` not reset on Blend's disengaged->engaged transition** (#12): unlike LoCut/HiCut/Distance, IR B's convolution engine kept no history of its own bypass state, so its internal overlap-add tail could go stale (frozen, not decaying) while Blend was disengaged and then leak into the output the moment Blend re-engaged. `CabConvolutionEngine` now tracks `blendEngagedPreviously` and calls `convolutionB.reset()` on the same disengaged->engaged transition the other stages already handle.
+- **Reloading IR A after IR B silently invalidated IR B's phase alignment** (#13): `setImpulseResponse()`/`loadDefaultImpulseResponse()` recorded IR A's new onset as the phase-alignment reference but never re-ran IR B's alignment against it, leaving an already-loaded IR B aligned to a stale, overwritten onset (reintroducing comb-filtering on the next Blend crossfade). `CabConvolutionEngine` now retains a copy of IR B's raw, pre-alignment buffer and automatically re-aligns it whenever IR A's reference onset changes.
 
 ## [0.1.0] - 2026-07-14
 

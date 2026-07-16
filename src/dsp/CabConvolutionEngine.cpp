@@ -202,6 +202,15 @@ void CabConvolutionEngine::setImpulseResponse (juce::AudioBuffer<float> irBuffer
                                       juce::dsp::Convolution::Normalise::yes);
 
     anyImpulseResponseLoaded = true;
+
+    // IR A's onset (the alignment reference recorded above) just changed. If
+    // a real IR B is already loaded, its alignment was computed against the
+    // *previous* reference and is now stale - silently reintroducing
+    // comb-filtering the next time Blend crosses back into an engaged range
+    // (see #13). Re-run alignment from IR B's retained raw buffer against
+    // the new reference so it never goes stale like this.
+    if (irBNeedsAlignment)
+        setImpulseResponseB (lastIrBRawBuffer, lastIrBRawSampleRate);
 }
 
 void CabConvolutionEngine::loadDefaultImpulseResponse()
@@ -222,10 +231,25 @@ void CabConvolutionEngine::loadDefaultImpulseResponse()
                                       juce::dsp::Convolution::Normalise::no);
 
     anyImpulseResponseLoaded = true;
+
+    // Same rationale as the end of setImpulseResponse() above: this changed
+    // the alignment reference, so an already-loaded real IR B must be
+    // re-aligned against it rather than left pointing at a stale onset (#13).
+    if (irBNeedsAlignment)
+        setImpulseResponseB (lastIrBRawBuffer, lastIrBRawSampleRate);
 }
 
 void CabConvolutionEngine::setImpulseResponseB (juce::AudioBuffer<float> irBuffer, double irSampleRate)
 {
+    // Retain a copy of the raw, pre-alignment buffer/rate so a later IR A
+    // reload can re-run this alignment on its own (see setImpulseResponse()/
+    // loadDefaultImpulseResponse() above and #13), without requiring the
+    // caller to reload IR B. Copied (not moved) - `irBuffer` below still
+    // needs its original content for the alignment call that follows.
+    lastIrBRawBuffer.makeCopyOf (irBuffer);
+    lastIrBRawSampleRate = irSampleRate;
+    irBNeedsAlignment = true;
+
     // Inter-IR phase alignment: shift IR B's onset to match IR A's most
     // recently recorded onset, so blending the two convolution outputs
     // doesn't introduce comb-filtering from a timing mismatch between their
@@ -255,6 +279,12 @@ void CabConvolutionEngine::loadDefaultImpulseResponseB()
                                        juce::dsp::Convolution::Normalise::no);
 
     anyImpulseResponseBLoaded = true;
+
+    // The default delta IR has no meaningful onset to keep aligned - clear
+    // the retained-raw-buffer bookkeeping so a subsequent IR A reload
+    // doesn't try to re-align it (see setImpulseResponse() above and #13).
+    irBNeedsAlignment = false;
+    lastIrBRawBuffer.setSize (0, 0);
 }
 
 void CabConvolutionEngine::process (juce::dsp::AudioBlock<float>& block)
