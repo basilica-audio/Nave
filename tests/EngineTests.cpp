@@ -1,6 +1,7 @@
 #include "dsp/CabConvolutionEngine.h"
 #include "TestHelpers.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
@@ -173,6 +174,19 @@ TEST_CASE ("HiCut attenuates high-frequency energy once engaged", "[dsp][engine]
     CHECK (engagedRms < bypassedRms * 0.5); // at least -6 dB of attenuation
 }
 
+// Normalisation-awareness note (design-brief.md SS5, research-notes.md SS5):
+// juce::dsp::Convolution's Normalise::yes rescales each loaded IR to a fixed
+// *energy* target (JUCE forum: normalizationFactor = 0.125f /
+// sqrt(sumOfSquaredMagnitudes)), not a perceptual loudness match - two
+// real-world cab IRs of different length/spectral density can land at
+// audibly different output levels after loading even though both were
+// "normalised". There is no way to unit-test perceptual loudness-matching
+// without reference audio, so this is deliberately just a comment, not a
+// new TEST_CASE: docs/manual.md's "Loading impulse responses" section now
+// carries the user-facing version of this same callout (pointing at Level
+// as the fix), so a future contributor investigating a "why do these two
+// IRs sound different loudness" bug report finds the documented explanation
+// here and in the manual instead of re-discovering it from scratch.
 TEST_CASE ("A loaded (non-delta) impulse response measurably changes the output", "[dsp][engine][convolution]")
 {
     CabConvolutionEngine engine;
@@ -743,4 +757,123 @@ TEST_CASE ("reset() clears filter/convolution/mixer state without crashing", "[d
     TestHelpers::fillWithSine (buffer, testSampleRate, testFrequencyHz, 0.9f);
     CHECK_NOTHROW (engine.process (block));
     CHECK (TestHelpers::allSamplesFinite (buffer));
+}
+
+//==============================================================================
+// v0.2.0 (design-brief.md, "Distance" module spec): the low-shelf's taper
+// changed from plain-linear-in-dB to a front-loaded curve. These three
+// TEST_CASEs are the brief's own "Catch2 test guarantees" section, verbatim.
+
+TEST_CASE ("Distance's low-shelf taper is front-loaded: more cut in the first half of the sweep than the second",
+           "[dsp][engine][distance][taper]")
+{
+    // 40 Hz sits comfortably below the 200 Hz low-shelf corner, so the
+    // measured attenuation closely tracks the shelf's f->0 plateau gain -
+    // the same value CabConvolutionEngine.cpp's tapered() helper targets.
+    constexpr double lowShelfProbeFrequencyHz = 40.0;
+    constexpr float inputAmplitude = 0.5f;
+
+    const auto measureCutDb = [] (float distancePercent)
+    {
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setDistancePercent (distancePercent);
+
+        const auto spec = makeTestSpec (2);
+        engine.prepare (spec);
+
+        juce::AudioBuffer<float> buffer (2, testBlockSize);
+        TestHelpers::fillWithSine (buffer, testSampleRate, lowShelfProbeFrequencyHz, inputAmplitude);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        CHECK (TestHelpers::allSamplesFinite (buffer));
+
+        const auto outRms = TestHelpers::rms (buffer);
+        const auto inRms = static_cast<double> (inputAmplitude) / std::sqrt (2.0);
+
+        return juce::Decibels::gainToDecibels (outRms / inRms);
+    };
+
+    const auto cutAt0 = measureCutDb (0.0f);
+    const auto cutAt50 = measureCutDb (50.0f);
+    const auto cutAt100 = measureCutDb (100.0f);
+
+    // Monotonically non-increasing: more Distance never means less cut.
+    REQUIRE (cutAt50 <= cutAt0 + 1.0e-2);
+    REQUIRE (cutAt100 <= cutAt50 + 1.0e-2);
+
+    // The brief's own measurable proxy for "front-loaded": the first half of
+    // the sweep (0 -> 50%) must cover *more* of the total cut range than the
+    // second half (50% -> 100%).
+    const auto firstHalfCutDb = cutAt0 - cutAt50;
+    const auto secondHalfCutDb = cutAt50 - cutAt100;
+
+    CHECK (firstHalfCutDb > secondHalfCutDb);
+}
+
+TEST_CASE ("Distance's low-shelf taper regression guard: fixed-point snapshot at 25/50/75/100%",
+           "[dsp][engine][distance][taper]")
+{
+    // Guards against a future accidental taper-curve regression (same
+    // pattern as the existing bypass-epsilon snapshot checks elsewhere in
+    // this file). The expected figures are the analytic f->0 plateau values
+    // of CabConvolutionEngine.cpp's tapered() ease-out curve
+    // (1 - (1 - normalisedDistance)^1.8, scaled by the -6 dB max cut) - not
+    // a match to any sourced hardware curve (design-brief.md's Honesty
+    // section: no such curve was sourced for the exact taper shape). The
+    // tolerance is wide enough to absorb the small, expected gap between a
+    // finite test frequency's measured attenuation and that analytic
+    // plateau.
+    constexpr double lowShelfProbeFrequencyHz = 40.0;
+    constexpr int snapshotBlockSize = 65536; // long enough for a stable RMS reading at 40 Hz
+    constexpr float inputAmplitude = 0.5f;
+    constexpr float toleranceDb = 1.0f;
+
+    const auto measureCutDb = [] (float distancePercent)
+    {
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setDistancePercent (distancePercent);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = testSampleRate;
+        spec.maximumBlockSize = static_cast<juce::uint32> (snapshotBlockSize);
+        spec.numChannels = 2;
+        engine.prepare (spec);
+
+        juce::AudioBuffer<float> buffer (2, snapshotBlockSize);
+        TestHelpers::fillWithSine (buffer, testSampleRate, lowShelfProbeFrequencyHz, inputAmplitude);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        CHECK (TestHelpers::allSamplesFinite (buffer));
+
+        const auto outRms = TestHelpers::rms (buffer);
+        const auto inRms = static_cast<double> (inputAmplitude) / std::sqrt (2.0);
+
+        return juce::Decibels::gainToDecibels (outRms / inRms);
+    };
+
+    CHECK (measureCutDb (25.0f) == Catch::Approx (-2.42).margin (toleranceDb));
+    CHECK (measureCutDb (50.0f) == Catch::Approx (-4.28).margin (toleranceDb));
+    CHECK (measureCutDb (75.0f) == Catch::Approx (-5.51).margin (toleranceDb));
+    CHECK (measureCutDb (100.0f) == Catch::Approx (-6.00).margin (toleranceDb));
+}
+
+TEST_CASE ("LoCut/HiCut ranges match the v2 brief's deliberate-keep decision", "[dsp][engine][ranges]")
+{
+    // design-brief.md's LoCut/HiCut module specs: both ranges were
+    // considered against the NadIR reference (10-400 Hz / 6-22 kHz) and
+    // *deliberately* kept wider than that reference rather than narrowed -
+    // cheap insurance against that documented decision silently drifting
+    // the next time someone touches these constants.
+    CHECK (CabConvolutionEngine::loCutMinHz == 20.0f);
+    CHECK (CabConvolutionEngine::loCutMaxHz == 800.0f);
+    CHECK (CabConvolutionEngine::hiCutMinHz == 2000.0f);
+    CHECK (CabConvolutionEngine::hiCutMaxHz == 20000.0f);
 }

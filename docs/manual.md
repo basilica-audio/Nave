@@ -46,6 +46,8 @@ Both slots' file paths are saved with your session/preset, so a project reopens 
 
 ### IR Blend
 
+Two different loaded IRs can end up sounding noticeably different in level even at identical Distance/LoCut/HiCut/Mix settings — Nave normalises each loaded IR's *energy* to a consistent reference (not its perceived loudness), and real-world cab IRs vary enough in length/spectral content that the same energy target can still land at different subjective volumes. This isn't a bug to work around with EQ — reach for **Level** to match gain staging after swapping IRs.
+
 The **IR Blend** knob crossfades between IR A (0%) and IR B (100%). Typical uses:
 
 - **Two different cabs** — blend a tight 4x12 with a boomier 2x12 to taste, without needing a separate blending plugin.
@@ -57,7 +59,7 @@ Blend defaults to 0% (IR A only) — loading an IR B and leaving Blend at 0% has
 
 ### Distance (simulated mic distance)
 
-The **Distance** knob is a simplified emulation of moving the mic further from the cab: at higher settings it gently reduces low-end proximity buildup and dulls the top end slightly (simulating high-frequency air absorption and off-axis darkening). It is *not* a physically exact distance model — no pre-delay/timing change is applied — just a musically useful tonal shift for pushing a too-close/too-bright IR back in the mix, without reaching for a separate EQ.
+The **Distance** knob is a simplified emulation of moving the mic further from the cab: at higher settings it reduces low-end proximity buildup and dulls the top end slightly. The top-end darkening is modelled as a real cabinet's high end rolling off as a mic moves further back and off-axis — that's driven far more by loudspeaker directivity than by literal air absorption at typical reamping distances, so don't read it as "the air between the mic and the cab" so much as "how the speaker itself radiates less high end off to the side." It is *not* a physically exact distance model — no pre-delay/timing change is applied — just a musically useful tonal shift for pushing a too-close/too-bright IR back in the mix, without reaching for a separate EQ. The low end responds faster near the start of the knob's travel and tapers off toward 100%, mirroring how real proximity effect behaves — most of the change happens early, not spread evenly across the full sweep.
 
 Distance defaults to 0% ("off" — no coloration applied at all, a true passthrough at this stage of the chain).
 
@@ -71,6 +73,10 @@ Distance defaults to 0% ("off" — no coloration applied at all, a true passthro
 | **Distance** | 0 – 100 | 0 (off) | % | Simulated mic-to-cab distance: reduces proximity-effect bass and adds high-frequency darkening as the value increases. See [Distance](#distance-simulated-mic-distance). |
 | **Mix** | 0 – 100 | 100 (fully wet) | % | Dry/wet blend of the fully-processed signal against your original input. Lower it for a parallel/blended cab tone, or to taste-test how much of the IR's character you actually want. |
 | **Level** | -24 – +24 | 0 | dB | Output trim, applied last. Use it to match gain staging after swapping IRs or dialling in Mix/Blend/Distance, all of which can shift the overall level. |
+
+## Presets
+
+A preset bar sits at the top of Nave's editor: `[<] [PresetName] [>] [Save] [Save As...] [Delete] [Import...] [Export...]`. Click the preset name to open the full list (factory presets first, then your own, both alphabetical); `<`/`>` step through the same list. Eight factory presets ship with Nave — see [`docs/presets.md`](presets.md) for what each one is for. Your own presets save to `~/Library/Audio/Presets/Yves Vogl/Nave/` on macOS (`%APPDATA%\Yves Vogl\Nave\Presets\` on Windows); "Set current as default" (in the preset menu) controls what a freshly inserted instance of Nave loads. Import/Export both accept single preset files; Import also accepts a `.zip` preset bank exported by `PresetManager::exportBank()`.
 
 ## Latency
 

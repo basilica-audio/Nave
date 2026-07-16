@@ -4,6 +4,7 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include "dsp/CabConvolutionEngine.h"
+#include "presets/PresetManager.h"
 
 // Nave: a cabinet impulse-response (IR) loader for reamping guitar/bass DI
 // tracks. Signal flow lives in CabConvolutionEngine (src/dsp) so it stays
@@ -78,6 +79,14 @@ public:
     juce::String getCurrentIrFilePathB() const;
 
     juce::AudioProcessorValueTreeState apvts;
+
+    // M2 preset system (.scaffold/specs/preset-system-m2.md,
+    // src/presets/PresetManager.h). Constructed after apvts (its
+    // constructor registers APVTS parameter listeners) and public so
+    // NaveAudioProcessorEditor's PresetBar can talk to it directly - the
+    // same "processor owns it, editor references it" pattern apvts itself
+    // already uses.
+    basilica::presets::PresetManager presetManager;
 
 private:
     CabConvolutionEngine engine;

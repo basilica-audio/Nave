@@ -19,7 +19,8 @@ Nave is a cabinet impulse-response (IR) loader built on JUCE 8, aimed at reampin
 - **IR loading, two independent slots** - load any WAV/AIFF impulse response into IR A and/or IR B via file choosers; loading happens off the audio thread and never blocks or allocates during playback
 - **IR Blend** - crossfades between IR A and IR B (e.g. two cabs, or two mic positions on the same cab), with automatic inter-IR phase alignment so blending never introduces comb-filtering from a timing mismatch between the two IRs
 - **Zero-latency convolution** - `juce::dsp::Convolution`'s zero-latency uniformly partitioned algorithm for both IR slots, so Nave never adds plugin delay compensation overhead
-- **Distance** - simulated mic-to-cab distance (reduced proximity-effect bass + high-frequency air-absorption darkening as the value increases); an explicit "off" position at its default
+- **Distance** - simulated mic-to-cab distance (a front-loaded proximity-effect bass cut plus high-frequency darkening - driven far more by loudspeaker directivity than literal air absorption at reamping distances - as the value increases); an explicit "off" position at its default
+- **Presets** - 8 factory presets plus full user preset save/load/import/export (single files and zip banks), with German frame-string localisation
 - **LoCut** - post-convolution high-pass, 20 Hz - 800 Hz (default 20 Hz, an explicit "off"/bypassed position), removes low-end mud
 - **HiCut** - post-convolution low-pass, 2 kHz - 20 kHz (default 20 kHz, also an explicit "off" position), tames fizz
 - **Mix** - dry/wet, default 100% (fully wet) - a cabinet IR is normally run fully in the signal path
@@ -58,7 +59,7 @@ Full musical context and usage tips: [`docs/manual.md`](docs/manual.md).
 |---|---|---|
 | M0 | Bootstrap - project skeleton, CI, docs | Done |
 | M1 | DSP completion & test coverage - IR Blend, Distance emulation, inter-IR phase alignment, broadened Catch2 suite | Done (IR browser + bundled IR library deferred - see issue tracker) |
-| M2 | Presets & state recall - preset system, factory presets | Planned |
+| M2 | Presets & state recall - preset system, factory presets, DE frame localisation | Done |
 | M3 | GUI & accessibility - custom LookAndFeel, accessibility pass | Planned |
 | M4 | Release - code signing, notarization, installers, v1.0.0 | Planned |
 <!-- ==END BODY== -->

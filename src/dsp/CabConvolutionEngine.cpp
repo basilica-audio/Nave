@@ -1,6 +1,8 @@
 #include "CabConvolutionEngine.h"
 #include "IrAlignment.h"
 
+#include <cmath>
+
 namespace
 {
     // Keeps a requested filter frequency safely below Nyquist regardless of
@@ -23,6 +25,24 @@ namespace
         juce::AudioBuffer<float> buffer (1, 1);
         buffer.setSample (0, 0, 1.0f);
         return buffer;
+    }
+
+    // v0.2.0 Distance taper (design-brief.md): "ease-out" power curve -
+    // applies the exponent to the *complement* of normalisedDistance and
+    // inverts, rather than raising normalisedDistance itself to the
+    // exponent. A plain pow(normalisedDistance, exponent) with exponent > 1
+    // is convex on [0, 1] (slow start, accelerating near 1) - a back-loaded
+    // shape, the opposite of the brief's "most of the audible change
+    // happens in the first third of the knob's travel, tapering off toward
+    // 100%". This formulation is concave instead: a fast initial rise that
+    // flattens out approaching 1, mirroring real proximity effect's
+    // "accelerates then saturates" curve. See
+    // CabConvolutionEngine::distanceLowShelfTaperExponent's doc comment for
+    // the full rationale. The high-shelf is intentionally excluded from
+    // this - it keeps the plain-linear taper it always had.
+    float tapered (float normalisedDistance, float exponent) noexcept
+    {
+        return 1.0f - std::pow (1.0f - normalisedDistance, exponent);
     }
 }
 
@@ -121,7 +141,7 @@ void CabConvolutionEngine::prepare (const juce::dsp::ProcessSpec& spec)
                                      / (distanceMaxPercent - distanceMinPercent);
     *distanceLowShelfFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
         sampleRate, distanceLowShelfFrequencyHz, filterQ,
-        juce::Decibels::decibelsToGain (normalisedDistance * distanceLowShelfMaxCutDb));
+        juce::Decibels::decibelsToGain (tapered (normalisedDistance, distanceLowShelfTaperExponent) * distanceLowShelfMaxCutDb));
     *distanceHighShelfFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         sampleRate, distanceHighShelfFrequencyHz, filterQ,
         juce::Decibels::decibelsToGain (normalisedDistance * distanceHighShelfMaxCutDb));
@@ -370,7 +390,7 @@ void CabConvolutionEngine::process (juce::dsp::AudioBlock<float>& block)
 
         *distanceLowShelfFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
             sampleRate, distanceLowShelfFrequencyHz, filterQ,
-            juce::Decibels::decibelsToGain (normalisedDistance * distanceLowShelfMaxCutDb));
+            juce::Decibels::decibelsToGain (tapered (normalisedDistance, distanceLowShelfTaperExponent) * distanceLowShelfMaxCutDb));
         *distanceHighShelfFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
             sampleRate, distanceHighShelfFrequencyHz, filterQ,
             juce::Decibels::decibelsToGain (normalisedDistance * distanceHighShelfMaxCutDb));

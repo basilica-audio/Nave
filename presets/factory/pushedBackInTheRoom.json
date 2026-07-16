@@ -1,0 +1,15 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.nave",
+    "pluginVersion": "0.2.0",
+    "name": "Pushed Back in the Room",
+    "category": "Guitar",
+    "parameters": {
+        "loCut": 20.0,
+        "hiCut": 20000.0,
+        "irBlend": 0.0,
+        "micDistance": 60.0,
+        "mix": 100.0,
+        "level": 1.5
+    }
+}

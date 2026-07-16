@@ -1,0 +1,15 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.nave",
+    "pluginVersion": "0.2.0",
+    "name": "Default",
+    "category": "Init",
+    "parameters": {
+        "loCut": 20.0,
+        "hiCut": 20000.0,
+        "irBlend": 0.0,
+        "micDistance": 0.0,
+        "mix": 100.0,
+        "level": 0.0
+    }
+}

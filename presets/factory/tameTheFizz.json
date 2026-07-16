@@ -1,0 +1,15 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.nave",
+    "pluginVersion": "0.2.0",
+    "name": "Tame the Fizz",
+    "category": "Guitar",
+    "parameters": {
+        "loCut": 100.0,
+        "hiCut": 5000.0,
+        "irBlend": 0.0,
+        "micDistance": 0.0,
+        "mix": 100.0,
+        "level": 0.0
+    }
+}

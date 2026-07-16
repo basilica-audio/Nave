@@ -31,10 +31,25 @@
 // applies "inter-IR phase alignment" (see IrAlignment.h) beforehand, so the
 // two IRs' transient onsets line up before they're ever summed.
 //
-// Distance emulates the effect of mic-to-cab distance: a gentle proximity-
-// effect low-shelf cut plus a high-shelf "air absorption" cut, both scaling
-// with the Distance parameter. Distance defaults to 0% ("off"), the same
-// explicit-bypass-at-the-extreme pattern used by LoCut/HiCut below.
+// Distance emulates the effect of mic-to-cab distance: a proximity-effect
+// low-shelf cut plus a high-shelf darkening cut (driven far more by
+// loudspeaker directivity than literal air absorption at reamping distances
+// - see docs/research-notes.md SS2), both scaling with the Distance
+// parameter. Distance defaults to 0% ("off"), the same explicit-bypass-at-
+// the-extreme pattern used by LoCut/HiCut below.
+//
+// v0.2.0 (design-brief.md, "Distance" module spec): the low-shelf's gain no
+// longer scales linearly against the normalised Distance value. Real
+// proximity effect is front-loaded - "accelerates exponentially... then
+// saturates" (docs/research-notes.md SS1) - so the low-shelf now scales
+// against normalisedDistance raised to distanceLowShelfTaperExponent (>1),
+// which concentrates most of the audible cut in the first third or so of
+// the knob's travel and tapers off toward 100%. The high-shelf intentionally
+// keeps its plain-linear taper: Two Notes' own reference model attributes
+// off-axis darkening to a *separate* axis (their Center control) from
+// distance, so Nave's single-knob high-shelf is already a simplification of
+// that other axis, not the front-loaded proximity effect - a linear taper
+// there is the honest choice, not an oversight (see design-brief.md).
 class CabConvolutionEngine
 {
 public:
@@ -155,15 +170,36 @@ private:
     static constexpr float blendBypassEpsilon = 0.001f;
     static constexpr float distanceBypassEpsilonPercent = 0.5f;
 
-    // Distance emulation: fixed shelf frequencies, gain scaling linearly
-    // (in dB) with the normalised Distance parameter. Deliberately gentle -
+    // Distance emulation: fixed shelf frequencies. Deliberately gentle -
     // this approximates the two most audible effects of mic-to-cab distance
-    // (reduced proximity-effect bass buildup, and high-frequency air
-    // absorption/off-axis darkening), not a physically exact model.
+    // (reduced proximity-effect bass buildup, and high-frequency
+    // directivity-driven darkening), not a physically exact model.
     static constexpr float distanceLowShelfFrequencyHz = 200.0f;
     static constexpr float distanceLowShelfMaxCutDb = -6.0f;
     static constexpr float distanceHighShelfFrequencyHz = 5000.0f;
     static constexpr float distanceHighShelfMaxCutDb = -9.0f;
+
+    // v0.2.0 taper exponent for the low-shelf only (see the class-level
+    // v0.2.0 comment above and the `tapered()` helper in
+    // CabConvolutionEngine.cpp for the exact curve). Chosen from the
+    // design-brief's sourced "^1.6-^2" range and tuned by ear against the
+    // qualitative "accelerates then saturates" reference curve - see
+    // design-brief.md's Honesty section for what this number is and isn't
+    // calibrated against.
+    //
+    // Implementation note: a plain pow(normalisedDistance, exponent) with
+    // exponent > 1 is *convex* on [0, 1] (slow start, accelerating near 1) -
+    // that is a back-loaded curve, the opposite of what the brief specifies
+    // ("most of the audible change happens in the first third of the knob's
+    // travel, tapering off toward 100%"). `tapered()` instead applies the
+    // exponent to the *complement* and inverts
+    // (1 - (1 - normalisedDistance)^exponent, the standard "ease-out" power
+    // curve), which is concave - a fast initial rise that flattens out
+    // approaching 100%, the genuinely front-loaded shape the brief describes
+    // and tests/EngineTests.cpp's taper-shape test asserts. The high-shelf
+    // deliberately has no equivalent constant - it keeps a plain-linear
+    // taper (see the class-level comment).
+    static constexpr float distanceLowShelfTaperExponent = 1.8f;
 
     double sampleRate = 44100.0;
     int numChannelsPrepared = 2;

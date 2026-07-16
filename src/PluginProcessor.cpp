@@ -5,14 +5,63 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include <BinaryData.h>
+
 #include <limits>
+
+namespace
+{
+    // The small, Nave-specific config surface PresetManager needs (see
+    // src/presets/PresetManager.h's class docs) - everything else about the
+    // preset system is fully generic and portable to sibling plugins (see
+    // docs/preset-system-notes.md).
+    basilica::presets::PresetManagerConfig makePresetManagerConfig()
+    {
+        // JucePlugin_CFBundleIdentifier expands to a raw (unquoted) token
+        // sequence, not a string literal - JUCE_STRINGIFY() is the
+        // documented way to turn it into one (see JUCE's own
+        // juce_CoreMidi_mac.mm for the same pattern). This is always
+        // "com.yvesvogl.nave" here (BUNDLE_ID in CMakeLists.txt), matching
+        // the "plugin" field baked into every presets/factory/*.json file.
+        basilica::presets::PresetManagerConfig config;
+        config.pluginId = JUCE_STRINGIFY (JucePlugin_CFBundleIdentifier);
+        config.pluginName = JucePlugin_Name;
+        config.manufacturerName = "Yves Vogl";
+        config.pluginVersion = JucePlugin_VersionString;
+        // userPresetsDirectoryOverrideForTests intentionally left
+        // default-constructed (empty) - production instances always use the
+        // real platform-standard preset location (see PresetManager.h).
+        return config;
+    }
+
+    // BinaryData symbol names are derived from the presets/factory/*.json
+    // file names passed to juce_add_binary_data() in CMakeLists.txt (dots
+    // become underscores) - this list must stay in sync with that SOURCES
+    // list. Order here only affects factory-preset iteration order before
+    // getAllPresets() re-sorts alphabetically, so it isn't otherwise
+    // significant.
+    std::vector<basilica::presets::FactoryPresetAsset> makeFactoryPresetAssets()
+    {
+        return {
+            { BinaryData::default_json, BinaryData::default_jsonSize },
+            { BinaryData::tameTheFizz_json, BinaryData::tameTheFizz_jsonSize },
+            { BinaryData::liveStage_json, BinaryData::liveStage_jsonSize },
+            { BinaryData::darkVintage_json, BinaryData::darkVintage_jsonSize },
+            { BinaryData::pushedBackInTheRoom_json, BinaryData::pushedBackInTheRoom_jsonSize },
+            { BinaryData::touchOfRoomMic_json, BinaryData::touchOfRoomMic_jsonSize },
+            { BinaryData::evenBlend_json, BinaryData::evenBlend_jsonSize },
+            { BinaryData::parallelCabBlendedDry_json, BinaryData::parallelCabBlendedDry_jsonSize },
+        };
+    }
+}
 
 //==============================================================================
 NaveAudioProcessor::NaveAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
+      apvts (*this, nullptr, "PARAMETERS", createParameterLayout()),
+      presetManager (apvts, makePresetManagerConfig(), makeFactoryPresetAssets())
 {
     loCutHz = apvts.getRawParameterValue (ParamIDs::loCut);
     hiCutHz = apvts.getRawParameterValue (ParamIDs::hiCut);
@@ -27,6 +76,11 @@ NaveAudioProcessor::NaveAudioProcessor()
     jassert (levelDb != nullptr);
     jassert (irBlendPercent != nullptr);
     jassert (micDistancePercent != nullptr);
+
+    // M2 default resolution: user "Default" preset > factory "Default"
+    // preset > the ParameterLayout defaults apvts was just constructed
+    // with above (see PresetManager::applyStartupDefault()'s docs).
+    presetManager.applyStartupDefault();
 }
 
 NaveAudioProcessor::~NaveAudioProcessor() = default;
