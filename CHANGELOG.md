@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Pilot-gated - not yet released.** This M3 GUI work replicates the
+`basilica-audio/silentium` M3 pilot pattern; it ships on its feature branch
+for review and carries no version bump or tag of its own.
+
+### Added
+
+- **Photoreal skeuomorphic GUI (M3)** - replaces the functional slider/toggle/combo-box editor with a custom editor built from pre-rendered Blender assets (the suite's gui-pipeline renders, copied into `resources/gui/` and embedded via BinaryData so the repo stays self-contained): a stone/gunmetal faceplate with three engraved bays (tone, character, output - see `.scaffold/gui-assets/faceplate-nave-v1/layout-manifest.json`), brass filmstrip knobs (128 frames, -135deg..+135deg) for the six continuous parameters (LoCut, HiCut, IR Blend, Distance, Mix, Level), and dual IR-loader slots (A/B) wired to the processor's real IR-file-slot state. See `docs/gui-preview.png` for the rendered result.
+- **Suite-reusable GUI component family** (`src/gui/`), ported from Silentium's M3 pilot: `FilmstripKnob`, `FilmstripToggle`, `AnalogMeter`, `BasilicaLookAndFeel` (gold serif labels with a WCAG-AA-verified backing chip), and `ImageDensity.h` (@1x/@2x asset tier selection).
+- **Stepped window scaling** (100/150/200%, persisted as a `uiScaleStep` property on the APVTS tree, round-tripping through host session save/reload).
+- New GUI test suite (`tests/gui/`): layout-manifest conformance, filmstrip frame math, meter ballistics, accessible names and WCAG contrast, editor construct/destroy, and an offscreen editor snapshot verified non-blank.
+
+### Changed
+
+- **The v0.3.0 plain-style editor controls are superseded by the photoreal editor and ship without dedicated on-screen controls in this asset wave**: the IR B Trim/IR B Delay knobs, the Blend Mode/IR Align/IR Gain Match/LoCut Slope/HiCut Slope combo boxes, and the IR B Polarity/IR A Min-Phase/IR B Min-Phase/Distance Air toggles. All eleven parameters remain fully host-automatable and reachable through the host's generic parameter view - the same interim policy sibling Silentium documented for its v0.4.0 engine parameters. Dedicated photoreal controls arrive with a later asset wave.
+
 ## [0.3.1] - 2026-07-31
 
 Crash-fix patch release.
