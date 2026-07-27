@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <new>
+#include <thread>
 
 // Audio-thread allocation guard.
 //
@@ -30,10 +31,30 @@ namespace
     std::atomic<int> audioThreadAllocations { 0 };
     std::atomic<bool> guardArmed { false };
 
+    // The thread the guard was armed on, i.e. the one standing in for the audio
+    // thread. Only allocations made *there* are the bug this gate is about.
+    //
+    // Without this attribution the guard counted every thread in the process,
+    // and juce::dsp::Convolution's background loader legitimately allocates
+    // while it finishes publishing an IR. In a Debug build the warm-up loop is
+    // slow enough that the loader is always done before the guard arms, so the
+    // gate passed; in an optimised build the warm-up runs fast enough that the
+    // loader is often still working inside the guarded window, and the gate
+    // failed with a non-deterministic 3-7 allocations. That was a defect in the
+    // measurement, not in process(): the counts came from a background thread
+    // where allocating is allowed. Attributing by thread makes the gate mean
+    // what its name says on both build types.
+    std::atomic<std::thread::id> guardedThread {};
+
     void recordAllocation() noexcept
     {
-        if (guardArmed.load (std::memory_order_relaxed))
-            audioThreadAllocations.fetch_add (1, std::memory_order_relaxed);
+        if (! guardArmed.load (std::memory_order_relaxed))
+            return;
+
+        if (std::this_thread::get_id() != guardedThread.load (std::memory_order_relaxed))
+            return;
+
+        audioThreadAllocations.fetch_add (1, std::memory_order_relaxed);
     }
 
     // Arms the counter for the lifetime of the scope. Deliberately RAII: an
@@ -44,6 +65,7 @@ namespace
         ScopedAllocationGuard()
         {
             audioThreadAllocations.store (0, std::memory_order_relaxed);
+            guardedThread.store (std::this_thread::get_id(), std::memory_order_relaxed);
             guardArmed.store (true, std::memory_order_relaxed);
         }
 
@@ -108,9 +130,20 @@ TEST_CASE ("The allocation guard itself detects an allocation", "[dsp][allocatio
     // assertion below pass vacuously.
     ScopedAllocationGuard guard;
 
-    auto* leaked = new int (42);
+    // Called as a plain function rather than written as a new-expression, and
+    // parked in a volatile sink. A new-expression is one of the few things the
+    // standard lets an optimiser delete outright, and at -O3 Clang does exactly
+    // that to an allocation whose result is never observed - which made this
+    // self-test report zero in Release while the guard was in fact working.
+    static volatile void* sink = nullptr;
+
+    auto* raw = ::operator new (sizeof (int));
+    sink = raw;
+
     const auto counted = guard.count();
-    delete leaked;
+
+    ::operator delete (raw);
+    sink = nullptr;
 
     CHECK (counted > 0);
 }
