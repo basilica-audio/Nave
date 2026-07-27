@@ -888,3 +888,807 @@ TEST_CASE ("LoCut/HiCut ranges match the v2 brief's deliberate-keep decision", "
     CHECK (CabConvolutionEngine::hiCutMinHz == 2000.0f);
     CHECK (CabConvolutionEngine::hiCutMaxHz == 20000.0f);
 }
+
+//==============================================================================
+//
+// v0.3.0 feature coverage. Every claim below is a measurement, not a smoke
+// test: filter slopes are measured in dB per octave, Distance Air's delay in
+// milliseconds by cross-correlation, loudness matching in K-weighted dB, and
+// the zipper fix as a bound on the largest sample-to-sample step.
+//
+//==============================================================================
+
+#include "dsp/IrLoudness.h"
+
+#include <catch2/generators/catch_generators.hpp>
+
+#include <random>
+
+namespace
+{
+    // Runs a steady sine through a freshly configured engine for long enough
+    // that the IIR filters reach steady state, and returns the RMS of the
+    // final block. Configuring happens through `configure` so each caller only
+    // states what it changes.
+    double measureSteadyStateRms (const std::function<void (CabConvolutionEngine&)>& configure,
+                                   double frequencyHz,
+                                   int numBlocks = 24,
+                                   int blockSize = 1024)
+    {
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setBlendProportion (0.0f);
+
+        configure (engine);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = testSampleRate;
+        spec.maximumBlockSize = static_cast<juce::uint32> (blockSize);
+        spec.numChannels = 2;
+
+        engine.prepare (spec);
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+
+        double rms = 0.0;
+
+        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        {
+            TestHelpers::fillWithSine (buffer, testSampleRate, frequencyHz, 0.5f,
+                                        static_cast<juce::int64> (blockIndex) * blockSize);
+
+            juce::dsp::AudioBlock<float> block (buffer);
+            engine.process (block);
+
+            rms = TestHelpers::rms (buffer);
+        }
+
+        return rms;
+    }
+
+    // Attenuation in dB of `frequencyHz` relative to an unfiltered reference
+    // run at the same frequency, so the measurement isolates the filter rather
+    // than including the sine's own amplitude.
+    double measureAttenuationDb (const std::function<void (CabConvolutionEngine&)>& configure,
+                                  double frequencyHz)
+    {
+        const auto filtered = measureSteadyStateRms (configure, frequencyHz);
+        const auto reference = measureSteadyStateRms ([] (CabConvolutionEngine&) {}, frequencyHz);
+
+        if (reference <= 0.0)
+            return 0.0;
+
+        return juce::Decibels::gainToDecibels (static_cast<float> (filtered / reference), -200.0f);
+    }
+
+    // Largest absolute sample-to-sample step across a buffer - the click
+    // detector the smoothing tests use.
+    float maxStep (const juce::AudioBuffer<float>& buffer)
+    {
+        float worst = 0.0f;
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        {
+            const auto* data = buffer.getReadPointer (channel);
+
+            for (int i = 1; i < buffer.getNumSamples(); ++i)
+                worst = std::max (worst, std::abs (data[i] - data[i - 1]));
+        }
+
+        return worst;
+    }
+
+    // The lag, in samples, at which `signal` best matches `reference` - used to
+    // measure Distance Air's delay without assuming how it is implemented.
+    double measureLagSamples (const juce::AudioBuffer<float>& reference,
+                               const juce::AudioBuffer<float>& signal,
+                               int maxLag)
+    {
+        const auto numSamples = juce::jmin (reference.getNumSamples(), signal.getNumSamples());
+
+        double bestScore = -1.0e30;
+        int bestLag = 0;
+
+        std::vector<double> scores (static_cast<size_t> (maxLag + 1), 0.0);
+
+        for (int lag = 0; lag <= maxLag; ++lag)
+        {
+            double sum = 0.0;
+
+            for (int i = lag; i < numSamples; ++i)
+                sum += static_cast<double> (reference.getSample (0, i - lag)) * signal.getSample (0, i);
+
+            scores[static_cast<size_t> (lag)] = sum;
+
+            if (sum > bestScore)
+            {
+                bestScore = sum;
+                bestLag = lag;
+            }
+        }
+
+        // Parabolic refinement, so a sub-sample delay is measurable.
+        if (bestLag > 0 && bestLag < maxLag)
+        {
+            const auto left = scores[static_cast<size_t> (bestLag - 1)];
+            const auto centre = scores[static_cast<size_t> (bestLag)];
+            const auto right = scores[static_cast<size_t> (bestLag + 1)];
+
+            const auto denominator = left - 2.0 * centre + right;
+
+            if (denominator < 0.0)
+                return static_cast<double> (bestLag) + 0.5 * (left - right) / denominator;
+        }
+
+        return static_cast<double> (bestLag);
+    }
+
+    // A short synthetic cabinet IR with a controllable spectral tilt, for the
+    // loudness-matching test: `tilt` < 1 darkens, > 1 brightens.
+    juce::AudioBuffer<float> makeTiltedIr (int numSamples, float tilt, unsigned int seed)
+    {
+        std::mt19937 engine (seed);
+        std::uniform_real_distribution<float> distribution (-1.0f, 1.0f);
+
+        juce::AudioBuffer<float> buffer (1, numSamples);
+        buffer.clear();
+
+        auto* data = buffer.getWritePointer (0);
+
+        float state = 0.0f;
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const auto decay = std::exp (-5.0f * static_cast<float> (i) / static_cast<float> (numSamples));
+            const auto noise = distribution (engine) * decay;
+
+            // A one-pole shaping the noise: a low coefficient keeps highs
+            // (bright), a high one smooths them away (dark).
+            state += (noise - state) * juce::jlimit (0.02f, 0.95f, tilt);
+            data[i] = state;
+        }
+
+        data[0] += 1.0f;
+
+        return buffer;
+    }
+}
+
+//==============================================================================
+// Test 13: neutrality. Every v0.3.0 parameter at its default must leave the
+// strict passthrough contract intact - this is the whole backward-compatibility
+// promise, expressed as a single sample-domain null.
+TEST_CASE ("Every v0.3.0 feature at its default preserves the passthrough null", "[dsp][engine][v030]")
+{
+    CabConvolutionEngine engine;
+    engine.setMixProportion (1.0f);
+    engine.setLevelDb (0.0f);
+    engine.setBlendProportion (0.0f);
+
+    // Explicitly set every new control to its documented neutral value rather
+    // than relying on the constructor, so this fails if a default ever drifts.
+    engine.setBlendMode (CabConvolutionEngine::BlendMode::Crossfade);
+    engine.setIrBTrimDb (0.0f);
+    engine.setIrBPolarityInverted (false);
+    engine.setIrBDelayMs (0.0f);
+    engine.setDistanceAirEnabled (false);
+    engine.setLoCutSlope (CabConvolutionEngine::Slope::TwelveDbPerOctave);
+    engine.setHiCutSlope (CabConvolutionEngine::Slope::TwelveDbPerOctave);
+    engine.setDuplicateFirstChannel (false);
+    engine.setGainMode (CabConvolutionEngine::GainMode::Energy);
+    engine.setIrAMinPhase (false);
+    engine.setIrBMinPhase (false);
+
+    const auto spec = makeTestSpec (2);
+    engine.prepare (spec);
+
+    CHECK (engine.getLatencySamples() == 0);
+
+    juce::AudioBuffer<float> reference (2, testBlockSize);
+    TestHelpers::fillWithSine (reference, testSampleRate, testFrequencyHz, 0.5f);
+
+    juce::AudioBuffer<float> buffer (2, testBlockSize);
+    buffer.makeCopyOf (reference);
+
+    juce::dsp::AudioBlock<float> block (buffer);
+    engine.process (block);
+
+    float maxResidual = 0.0f;
+
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        for (int i = 0; i < testBlockSize; ++i)
+            maxResidual = std::max (maxResidual,
+                                     std::abs (buffer.getSample (channel, i) - reference.getSample (channel, i)));
+
+    const auto residualDb = juce::Decibels::gainToDecibels (maxResidual, -200.0f);
+
+    CAPTURE (residualDb);
+    CHECK (residualDb < -80.0f);
+}
+
+//==============================================================================
+// Test 14: filter slopes, measured in dB per octave rather than asserted.
+TEST_CASE ("LoCut and HiCut slopes measure 12 and 24 dB per octave", "[dsp][engine][v030][slope]")
+{
+    SECTION ("LoCut at 24 dB/oct attenuates ~24 dB one octave below cutoff")
+    {
+        constexpr double cutoffHz = 400.0;
+
+        const auto attenuation = measureAttenuationDb (
+            [&] (CabConvolutionEngine& engine)
+            {
+                engine.setLoCutHz (static_cast<float> (cutoffHz));
+                engine.setLoCutSlope (CabConvolutionEngine::Slope::TwentyFourDbPerOctave);
+            },
+            cutoffHz * 0.5);
+
+        CAPTURE (attenuation);
+
+        // A 4th-order Butterworth high-pass is |H|^2 = r^8 / (1 + r^8) with
+        // r = f/fc, so at half the cutoff it sits at -24.1 dB exactly.
+        CHECK (attenuation < -23.0);
+        CHECK (attenuation > -25.0);
+    }
+
+    SECTION ("LoCut at 12 dB/oct attenuates ~12 dB one octave below cutoff")
+    {
+        constexpr double cutoffHz = 400.0;
+
+        const auto attenuation = measureAttenuationDb (
+            [&] (CabConvolutionEngine& engine)
+            {
+                engine.setLoCutHz (static_cast<float> (cutoffHz));
+                engine.setLoCutSlope (CabConvolutionEngine::Slope::TwelveDbPerOctave);
+            },
+            cutoffHz * 0.5);
+
+        CAPTURE (attenuation);
+
+        // 2nd-order Butterworth: -12.3 dB at half the cutoff.
+        CHECK (attenuation < -11.0);
+        CHECK (attenuation > -13.5);
+    }
+
+    SECTION ("HiCut at 24 dB/oct attenuates ~24 dB one octave above cutoff")
+    {
+        // Measured at the bottom of HiCut's range on purpose. A bilinear-
+        // transformed low-pass must reach zero at Nyquist, so its rolloff
+        // steepens as the measurement frequency approaches it: the same filter
+        // measured an octave above a 4 kHz cutoff reads -26.7 dB rather than
+        // the analog prototype's -24.1, because 8 kHz is already a third of
+        // Nyquist at 48 kHz. That is correct digital behaviour, not an error in
+        // the cascade - but it means an "is this really 24 dB/oct" measurement
+        // has to be taken well inside the band. At a 2 kHz cutoff the
+        // measurement point (4 kHz) is a sixth of Nyquist, where the warping
+        // costs about half a dB.
+        constexpr double cutoffHz = 2000.0;
+
+        const auto attenuation = measureAttenuationDb (
+            [&] (CabConvolutionEngine& engine)
+            {
+                engine.setHiCutHz (static_cast<float> (cutoffHz));
+                engine.setHiCutSlope (CabConvolutionEngine::Slope::TwentyFourDbPerOctave);
+            },
+            cutoffHz * 2.0);
+
+        CAPTURE (attenuation);
+
+        CHECK (attenuation < -23.0);
+        CHECK (attenuation > -25.5);
+    }
+
+    SECTION ("both slopes stay bypassed at the range extremes")
+    {
+        // The bypass-at-the-extreme contract is unchanged by the slope
+        // control: 24 dB/oct selected but LoCut wide open must still be a true
+        // passthrough, not a filter with an extreme cutoff.
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setLoCutSlope (CabConvolutionEngine::Slope::TwentyFourDbPerOctave);
+        engine.setHiCutSlope (CabConvolutionEngine::Slope::TwentyFourDbPerOctave);
+
+        const auto spec = makeTestSpec (2);
+        engine.prepare (spec);
+
+        juce::AudioBuffer<float> reference (2, testBlockSize);
+        TestHelpers::fillWithSine (reference, testSampleRate, testFrequencyHz, 0.5f);
+
+        juce::AudioBuffer<float> buffer (2, testBlockSize);
+        buffer.makeCopyOf (reference);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        float maxResidual = 0.0f;
+
+        for (int i = 0; i < testBlockSize; ++i)
+            maxResidual = std::max (maxResidual,
+                                     std::abs (buffer.getSample (0, i) - reference.getSample (0, i)));
+
+        CHECK (juce::Decibels::gainToDecibels (maxResidual, -200.0f) < -80.0f);
+    }
+}
+
+TEST_CASE ("Switching filter slope mid-signal does not click", "[dsp][engine][v030][slope]")
+{
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 40;
+
+    CabConvolutionEngine engine;
+    engine.setMixProportion (1.0f);
+    engine.setLevelDb (0.0f);
+    engine.setLoCutHz (300.0f);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = testSampleRate;
+    spec.maximumBlockSize = blockSize;
+    spec.numChannels = 2;
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+
+    float steadyStateStep = 0.0f;
+    float switchStep = 0.0f;
+
+    for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+    {
+        // Flip the slope halfway through, between two blocks, so the fade runs
+        // across a block boundary as it would in a real session.
+        if (blockIndex == numBlocks / 2)
+            engine.setLoCutSlope (CabConvolutionEngine::Slope::TwentyFourDbPerOctave);
+
+        TestHelpers::fillWithSine (buffer, testSampleRate, testFrequencyHz, 0.5f,
+                                    static_cast<juce::int64> (blockIndex) * blockSize);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        const auto step = maxStep (buffer);
+
+        if (blockIndex > 4 && blockIndex < numBlocks / 2)
+            steadyStateStep = std::max (steadyStateStep, step);
+
+        if (blockIndex >= numBlocks / 2 && blockIndex <= numBlocks / 2 + 2)
+            switchStep = std::max (switchStep, step);
+    }
+
+    CAPTURE (steadyStateStep, switchStep);
+
+    REQUIRE (steadyStateStep > 0.0f);
+
+    // A hard slope switch would jump the IIR state, producing a step far
+    // larger than the sine's own sample-to-sample motion.
+    CHECK (switchStep < 3.0f * steadyStateStep);
+}
+
+//==============================================================================
+// Test 15: Distance Air's delay is measured in milliseconds, by
+// cross-correlation, without assuming how it is implemented.
+TEST_CASE ("Distance Air delays the wet path by the time of flight", "[dsp][engine][v030][air]")
+{
+    constexpr int blockSize = 4096;
+
+    // An impulse train is the cleanest probe for a pure delay: the lag of the
+    // response against the input is the delay, whatever produced it.
+    const auto renderImpulse = [] (bool airEnabled, float distancePercent)
+    {
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setDistancePercent (distancePercent);
+        engine.setDistanceAirEnabled (airEnabled);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = testSampleRate;
+        spec.maximumBlockSize = blockSize;
+        spec.numChannels = 2;
+        engine.prepare (spec);
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+
+        // Settling passes so the one-pole delay-time smoother actually reaches
+        // its target. The smoother's time constant is 50 ms (2400 samples at
+        // 48 kHz), so a single 4096-sample block leaves it at only ~82% of the
+        // target - which reads back as a delay ~18% short and looks exactly
+        // like a scaling bug. Eight blocks is over 13 time constants.
+        for (int settleIndex = 0; settleIndex < 8; ++settleIndex)
+        {
+            buffer.clear();
+            juce::dsp::AudioBlock<float> settle (buffer);
+            engine.process (settle);
+        }
+
+        buffer.clear();
+        buffer.setSample (0, 64, 1.0f);
+        buffer.setSample (1, 64, 1.0f);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        return buffer;
+    };
+
+    SECTION ("off is bit-identical to v0.2")
+    {
+        const auto withAir = renderImpulse (false, 0.0f);
+
+        juce::AudioBuffer<float> reference (2, blockSize);
+        reference.clear();
+        reference.setSample (0, 64, 1.0f);
+        reference.setSample (1, 64, 1.0f);
+
+        float maxResidual = 0.0f;
+
+        for (int i = 0; i < blockSize; ++i)
+            maxResidual = std::max (maxResidual,
+                                     std::abs (withAir.getSample (0, i) - reference.getSample (0, i)));
+
+        CHECK (juce::Decibels::gainToDecibels (maxResidual, -200.0f) < -80.0f);
+    }
+
+    SECTION ("delay tracks 2.9 ms per unit distance")
+    {
+        const auto distancePercent = GENERATE (25.0f, 50.0f, 100.0f);
+
+        CAPTURE (distancePercent);
+
+        const auto dry = renderImpulse (false, distancePercent);
+        const auto wet = renderImpulse (true, distancePercent);
+
+        const auto lagSamples = measureLagSamples (dry, wet, 512);
+        const auto lagMs = lagSamples / testSampleRate * 1000.0;
+
+        const auto expectedMs = static_cast<double> (distancePercent) / 100.0 * 2.9;
+
+        CAPTURE (lagSamples, lagMs, expectedMs);
+
+        CHECK (std::abs (lagMs - expectedMs) < 0.02);
+    }
+}
+
+//==============================================================================
+// Test 16: loudness matching, measured through the same BS.1770 weighting the
+// feature is defined by.
+TEST_CASE ("Loudness gain mode level-matches spectrally different IRs", "[dsp][engine][v030][loudness]")
+{
+    constexpr int blockSize = 4096;
+
+    // A bright, short capture and a dark, long one - the pair that exposes
+    // energy normalisation's blind spot most clearly.
+    const auto brightIr = makeTiltedIr (256, 0.6f, 11u);
+    const auto darkIr = makeTiltedIr (2048, 0.08f, 22u);
+
+    // WHITE noise, deliberately. K-weighted IR normalisation scales each IR so
+    // that the integral of |K(f)|^2 |H(f)|^2 is constant. The K-weighted level
+    // of the CONVOLVED signal is the integral of |K|^2 |H|^2 |X|^2, so the two
+    // coincide exactly when the excitation |X|^2 is flat. Measuring with
+    // coloured excitation instead folds the source's own spectrum into the
+    // comparison and the two IRs separate again by several dB - not because
+    // the normalisation is wrong, but because it is answering a different
+    // question. With real (spectrally tilted) program material the match is
+    // therefore approximate rather than exact; docs/manual.md says so.
+    const auto renderThroughIr = [&] (const juce::AudioBuffer<float>& ir,
+                                       CabConvolutionEngine::GainMode mode)
+    {
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setGainMode (mode);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = testSampleRate;
+        spec.maximumBlockSize = blockSize;
+        spec.numChannels = 2;
+        engine.prepare (spec);
+
+        engine.setImpulseResponse (ir, testSampleRate);
+        engine.prepare (spec);
+
+        std::mt19937 noiseEngine (4242u);
+        std::uniform_real_distribution<float> distribution (-0.5f, 0.5f);
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const auto white = distribution (noiseEngine);
+
+            buffer.setSample (0, i, white);
+            buffer.setSample (1, i, white);
+        }
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        return buffer;
+    };
+
+    const auto kWeightedDb = [] (const juce::AudioBuffer<float>& buffer)
+    {
+        const auto energy = IrLoudness::computeKWeightedEnergy (buffer, testSampleRate);
+        return juce::Decibels::gainToDecibels (static_cast<float> (std::sqrt (energy)), -200.0f);
+    };
+
+    SECTION ("Loudness mode brings the two within 0.5 dB of each other")
+    {
+        const auto brightDb = kWeightedDb (renderThroughIr (brightIr, CabConvolutionEngine::GainMode::Loudness));
+        const auto darkDb = kWeightedDb (renderThroughIr (darkIr, CabConvolutionEngine::GainMode::Loudness));
+
+        CAPTURE (brightDb, darkDb);
+
+        CHECK (std::abs (brightDb - darkDb) < 0.5f);
+    }
+
+    SECTION ("Energy mode is measurably less level-fair, which is why Loudness exists")
+    {
+        const auto brightDb = kWeightedDb (renderThroughIr (brightIr, CabConvolutionEngine::GainMode::Energy));
+        const auto darkDb = kWeightedDb (renderThroughIr (darkIr, CabConvolutionEngine::GainMode::Energy));
+
+        CAPTURE (brightDb, darkDb);
+
+        // Asserting the improvement, not just that Loudness passes: if these
+        // two ever matched under Energy mode, the test above would be vacuous.
+        CHECK (std::abs (brightDb - darkDb) > 1.0f);
+    }
+}
+
+//==============================================================================
+// Test 17: the zipper fix. Stepping a gain mid-buffer at a large block size is
+// exactly the case v0.2's block-stepped gains handled badly.
+TEST_CASE ("Blend, Mix and Trim steps do not produce zipper steps", "[dsp][engine][v030][smoothing]")
+{
+    constexpr int blockSize = 1024;
+    constexpr int numBlocks = 24;
+
+    // A 1 kHz sine at 48 kHz moves at most 2*pi*1000/48000 * amplitude per
+    // sample; anything much beyond that is a discontinuity, not signal.
+    const auto sineIntrinsicStep = static_cast<float> (
+        2.0 * juce::MathConstants<double>::pi * testFrequencyHz / testSampleRate * 0.5);
+
+    const auto measureWorstStepAfterChange = [&] (const std::function<void (CabConvolutionEngine&)>& change)
+    {
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setBlendProportion (0.0f);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = testSampleRate;
+        spec.maximumBlockSize = blockSize;
+        spec.numChannels = 2;
+        engine.prepare (spec);
+
+        // A real, non-delta IR in slot B so Blend and Trim actually change the
+        // signal rather than crossfading between two identical paths.
+        juce::AudioBuffer<float> irB (1, 8);
+        irB.clear();
+        irB.setSample (0, 0, 0.9f);
+        irB.setSample (0, 3, -0.5f);
+        irB.setSample (0, 7, 0.25f);
+
+        engine.setAlignMode (IrAlignment::Mode::Legacy);
+        engine.setImpulseResponseB (irB, testSampleRate);
+        engine.prepare (spec);
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+
+        float worst = 0.0f;
+
+        for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+        {
+            if (blockIndex == numBlocks / 2)
+                change (engine);
+
+            TestHelpers::fillWithSine (buffer, testSampleRate, testFrequencyHz, 0.5f,
+                                        static_cast<juce::int64> (blockIndex) * blockSize);
+
+            juce::dsp::AudioBlock<float> block (buffer);
+            engine.process (block);
+
+            if (blockIndex >= numBlocks / 2)
+                worst = std::max (worst, maxStep (buffer));
+        }
+
+        return worst;
+    };
+
+    SECTION ("Blend")
+    {
+        const auto worst = measureWorstStepAfterChange (
+            [] (CabConvolutionEngine& engine) { engine.setBlendProportion (1.0f); });
+
+        CAPTURE (worst, sineIntrinsicStep);
+        CHECK (worst <= sineIntrinsicStep * 1.5f);
+    }
+
+    SECTION ("Mix")
+    {
+        const auto worst = measureWorstStepAfterChange (
+            [] (CabConvolutionEngine& engine) { engine.setMixProportion (0.0f); });
+
+        CAPTURE (worst, sineIntrinsicStep);
+        CHECK (worst <= sineIntrinsicStep * 1.5f);
+    }
+
+    SECTION ("IR B Trim")
+    {
+        const auto worst = measureWorstStepAfterChange (
+            [] (CabConvolutionEngine& engine)
+            {
+                engine.setBlendProportion (1.0f);
+                engine.setIrBTrimDb (12.0f);
+            });
+
+        CAPTURE (worst, sineIntrinsicStep);
+
+        // Trim raises level, so the settled sine's own step grows with it -
+        // 12 dB is a factor of ~4.
+        CHECK (worst <= sineIntrinsicStep * 4.0f * 1.5f);
+    }
+
+    SECTION ("IR B Polarity")
+    {
+        const auto worst = measureWorstStepAfterChange (
+            [] (CabConvolutionEngine& engine)
+            {
+                engine.setBlendProportion (1.0f);
+                engine.setIrBPolarityInverted (true);
+            });
+
+        CAPTURE (worst, sineIntrinsicStep);
+
+        // A hard +1/-1 flip would double the amplitude in one sample; ramping
+        // through zero keeps it within the signal's own motion.
+        CHECK (worst <= sineIntrinsicStep * 1.5f);
+    }
+}
+
+//==============================================================================
+// Test 18: tail length, the correctness bug hosts trip over on bypass/render.
+TEST_CASE ("getTailLengthSeconds reports the longer loaded IR", "[dsp][engine][v030][tail]")
+{
+    CabConvolutionEngine engine;
+
+    const auto spec = makeTestSpec (2);
+    engine.prepare (spec);
+
+    SECTION ("delta IRs report no tail")
+    {
+        CHECK (engine.getTailLengthSeconds() == Catch::Approx (0.0));
+    }
+
+    SECTION ("a half-second IR reports half a second")
+    {
+        const auto numSamples = static_cast<int> (testSampleRate * 0.5);
+
+        juce::AudioBuffer<float> ir (1, numSamples);
+        ir.clear();
+        ir.setSample (0, 0, 1.0f);
+
+        engine.setImpulseResponse (ir, testSampleRate);
+
+        CHECK (engine.getTailLengthSeconds()
+                == Catch::Approx (0.5).margin (1.0 / testSampleRate));
+    }
+
+    SECTION ("the longer of the two slots wins")
+    {
+        juce::AudioBuffer<float> shortIr (1, static_cast<int> (testSampleRate * 0.1));
+        shortIr.clear();
+        shortIr.setSample (0, 0, 1.0f);
+
+        juce::AudioBuffer<float> longIr (1, static_cast<int> (testSampleRate * 0.4));
+        longIr.clear();
+        longIr.setSample (0, 0, 1.0f);
+
+        engine.setAlignMode (IrAlignment::Mode::Legacy);
+        engine.setImpulseResponse (shortIr, testSampleRate);
+        engine.setImpulseResponseB (longIr, testSampleRate);
+
+        CHECK (engine.getTailLengthSeconds() > 0.35);
+    }
+
+    SECTION ("clearing an IR clears its contribution")
+    {
+        juce::AudioBuffer<float> ir (1, static_cast<int> (testSampleRate * 0.25));
+        ir.clear();
+        ir.setSample (0, 0, 1.0f);
+
+        engine.setImpulseResponse (ir, testSampleRate);
+        REQUIRE (engine.getTailLengthSeconds() > 0.2);
+
+        engine.loadDefaultImpulseResponse();
+        CHECK (engine.getTailLengthSeconds() == Catch::Approx (0.0));
+    }
+}
+
+//==============================================================================
+// Test 19: mono-in/stereo-out.
+TEST_CASE ("Mono input is duplicated into both output channels", "[dsp][engine][v030][buses]")
+{
+    CabConvolutionEngine engine;
+    engine.setMixProportion (1.0f);
+    engine.setLevelDb (0.0f);
+    engine.setDuplicateFirstChannel (true);
+
+    const auto spec = makeTestSpec (2);
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, testBlockSize);
+    TestHelpers::fillWithSine (buffer, testSampleRate, testFrequencyHz, 0.5f);
+
+    // Channel 1 starts silent, as a host handing a mono source to a stereo bus
+    // would leave it.
+    buffer.clear (1, 0, testBlockSize);
+
+    juce::dsp::AudioBlock<float> block (buffer);
+    engine.process (block);
+
+    // With the default delta IR the two channels must come out bit-identical.
+    for (int i = 0; i < testBlockSize; ++i)
+        REQUIRE (buffer.getSample (0, i) == buffer.getSample (1, i));
+
+    CHECK (TestHelpers::rms (buffer) > 0.0);
+}
+
+//==============================================================================
+// The companion to the parallel-blend topology test above: Precise alignment
+// legitimately shifts IR B, but it must not turn a parallel blend into a
+// cascaded one. Measured against the far larger error a cascade would produce.
+TEST_CASE ("Precise alignment does not change the blend topology", "[dsp][engine][v030][blend]")
+{
+    const auto makeIr = [] (float first, float second, float third)
+    {
+        juce::AudioBuffer<float> ir (1, 3);
+        ir.setSample (0, 0, first);
+        ir.setSample (0, 1, second);
+        ir.setSample (0, 2, third);
+        return ir;
+    };
+
+    const auto render = [&] (float blend, IrAlignment::Mode mode)
+    {
+        CabConvolutionEngine engine;
+        engine.setMixProportion (1.0f);
+        engine.setLevelDb (0.0f);
+        engine.setBlendProportion (blend);
+        engine.setAlignMode (mode);
+
+        const auto spec = makeTestSpec (2);
+        engine.prepare (spec);
+
+        engine.setImpulseResponse (makeIr (1.0f, 0.6f, 0.3f), testSampleRate);
+        engine.setImpulseResponseB (makeIr (0.8f, -0.4f, 0.2f), testSampleRate);
+        engine.prepare (spec);
+
+        juce::AudioBuffer<float> buffer (2, testBlockSize);
+        TestHelpers::fillWithSine (buffer, testSampleRate, testFrequencyHz, 0.5f);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        return buffer;
+    };
+
+    const auto pureA = render (0.0f, IrAlignment::Mode::Precise);
+    const auto pureB = render (1.0f, IrAlignment::Mode::Precise);
+    const auto quarter = render (0.25f, IrAlignment::Mode::Precise);
+
+    float maxResidual = 0.0f;
+
+    for (int i = 0; i < testBlockSize; ++i)
+    {
+        const auto expected = 0.75f * pureA.getSample (0, i) + 0.25f * pureB.getSample (0, i);
+        maxResidual = std::max (maxResidual, std::abs (quarter.getSample (0, i) - expected));
+    }
+
+    CAPTURE (maxResidual);
+
+    // Both endpoints are rendered through the same Precise-aligned engine, so
+    // the alignment shift is common to all three renders and the blend must be
+    // an exact linear interpolation between them. A cascaded implementation
+    // could not satisfy this.
+    CHECK (maxResidual < 1.0e-4f);
+}

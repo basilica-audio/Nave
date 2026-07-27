@@ -160,11 +160,16 @@ private:
         const auto integerDelay = static_cast<int> (std::floor (clamped));
         const auto fraction = clamped - static_cast<float> (integerDelay);
 
-        // Read four consecutive taps ending at the integer delay, oldest
-        // first, wrapping around the circular buffer.
+        // The four-tap window straddling the read position. The interpolation
+        // below runs between y0 and y1, so y0 must sit at EXACTLY the integer
+        // delay - offset 0 maps to `writeIndex - integerDelay`, the sample
+        // written `integerDelay` frames ago. Indexing one sample earlier here
+        // (a natural-looking off-by-one) makes the line delay by
+        // `delaySamples - 1`, which measures as a consistent one-sample
+        // shortfall on every delay the engine applies.
         const auto tapAt = [&] (int offset) -> float
         {
-            auto index = writeIndex - integerDelay + 1 - offset;
+            auto index = writeIndex - integerDelay - offset;
 
             while (index < 0)
                 index += bufferLength;
@@ -172,10 +177,10 @@ private:
             return buffer[static_cast<size_t> (index % bufferLength)];
         };
 
-        const auto yMinus1 = tapAt (-1);
-        const auto y0 = tapAt (0);
-        const auto y1 = tapAt (1);
-        const auto y2 = tapAt (2);
+        const auto yMinus1 = tapAt (-1);   // delay integerDelay - 1
+        const auto y0 = tapAt (0);         // delay integerDelay
+        const auto y1 = tapAt (1);         // delay integerDelay + 1
+        const auto y2 = tapAt (2);         // delay integerDelay + 2
 
         return lagrange3 (yMinus1, y0, y1, y2, fraction);
     }
