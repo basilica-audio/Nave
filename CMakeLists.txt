@@ -73,6 +73,8 @@ juce_add_binary_data(NaveBinaryData SOURCES
     presets/factory/touchOfRoomMic.json
     presets/factory/evenBlend.json
     presets/factory/parallelCabBlendedDry.json
+    presets/factory/micMorph.json
+    presets/factory/tightStack.json
     resources/i18n/de.txt
 )
 

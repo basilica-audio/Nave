@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <atomic>
@@ -53,6 +55,19 @@ namespace basilica::presets
         // and "format" are).
         juce::String pluginVersion;
 
+        // Optional hook invoked after a preset's parameter values have been
+        // applied, carrying the "stateVersion" the preset file declared (or
+        // 1 when the field is absent, i.e. any preset written before schema
+        // versioning existed).
+        //
+        // The preset system itself stays version-agnostic - it neither knows
+        // nor cares what a schema version means - so a plugin that needs to
+        // migrate old presets supplies that logic here rather than teaching
+        // this generic, portable class about its own schema. Nave uses it to
+        // pin alignMode to Legacy for pre-v0.3.0 presets, the same migration
+        // its setStateInformation() applies (see src/state/IrStateSerialization.h).
+        std::function<void (int)> migrateFromSchemaVersion;
+
         // Optional override for getUserPresetsDirectory(): if this is a
         // non-null juce::File, it is returned verbatim instead of computing
         // the platform-standard location. Exists purely for test isolation
@@ -99,6 +114,16 @@ namespace basilica::presets
         // to be called exactly once, from the owning AudioProcessor's
         // constructor, after the APVTS itself has been fully constructed.
         void applyStartupDefault();
+
+        // Installs (or replaces) the schema-migration hook described on
+        // PresetManagerConfig::migrateFromSchemaVersion. Provided as a setter
+        // because the callback usually needs to capture the owning processor,
+        // which does not exist yet when the config struct is built. Message
+        // thread only, and in practice only ever called once at construction.
+        void setSchemaMigrationCallback (std::function<void (int)> callback)
+        {
+            config.migrateFromSchemaVersion = std::move (callback);
+        }
 
         //======================================================================
         struct PresetEntry

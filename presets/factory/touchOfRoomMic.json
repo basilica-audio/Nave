@@ -1,7 +1,8 @@
 {
     "format": "basilica-preset-1",
     "plugin": "com.yvesvogl.nave",
-    "pluginVersion": "0.2.0",
+    "pluginVersion": "0.3.0",
+    "stateVersion": 2,
     "name": "Touch of Room Mic",
     "category": "Guitar",
     "parameters": {
@@ -10,6 +11,17 @@
         "irBlend": 15.0,
         "micDistance": 0.0,
         "mix": 100.0,
-        "level": 0.0
+        "level": 0.0,
+        "blendMode": 0.0,
+        "alignMode": 1.0,
+        "irBTrim": 0.0,
+        "irBPolarity": 0.0,
+        "irBDelay": 0.0,
+        "irGainMode": 0.0,
+        "irAMinPhase": 0.0,
+        "irBMinPhase": 0.0,
+        "distanceAir": 0.0,
+        "loCutSlope": 0.0,
+        "hiCutSlope": 0.0
     }
 }
