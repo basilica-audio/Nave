@@ -10,7 +10,20 @@
 // tracks. Signal flow lives in CabConvolutionEngine (src/dsp) so it stays
 // unit-testable independent of this AudioProcessor; this class is just
 // APVTS + host plumbing + IR file I/O around it.
-class NaveAudioProcessor final : public juce::AudioProcessor
+// The four v0.3.0 parameters that change convolver CONTENT (align mode, gain
+// mode, and the two per-slot min-phase switches) cannot be applied from
+// processBlock(): each re-runs FFT-scale analysis and reloads the stock
+// convolution engines. But APVTS parameter listeners fire on whichever thread
+// set the value, which for host automation is the audio thread.
+//
+// AsyncUpdater is the bridge: parameterChanged() only calls
+// triggerAsyncUpdate() (documented real-time safe, and it coalesces), and the
+// actual reconfiguration happens later on the message thread in
+// handleAsyncUpdate(). The remaining parameters stay on the per-block polling
+// path, which is cheaper and has no ordering requirements.
+class NaveAudioProcessor final : public juce::AudioProcessor,
+                                  private juce::AudioProcessorValueTreeState::Listener,
+                                  private juce::AsyncUpdater
 {
 public:
     NaveAudioProcessor();
@@ -89,6 +102,26 @@ public:
     basilica::presets::PresetManager presetManager;
 
 private:
+    void parameterChanged (const juce::String& parameterId, float newValue) override;
+    void handleAsyncUpdate() override;
+
+    // Pushes the audio-thread-safe v0.3.0 parameters into the engine. Called
+    // every block, like the v0.1/v0.2 parameters.
+    void applyAudioThreadParameters();
+
+    // Reads the four message-thread parameters out of the APVTS and pushes
+    // them into the engine. Message thread only.
+    void reconfigureEngineFromParameters();
+
+    // Writes the current raw IR buffers into apvts.state as embedded audio
+    // blobs, and stamps the schema version. Called from getStateInformation().
+    void embedImpulseResponsesIntoState();
+
+    // Restores both slots on load, in the documented precedence order:
+    // embedded audio first (authoritative), then the stored path, then the
+    // default delta IR.
+    void restoreImpulseResponsesFromState();
+
     CabConvolutionEngine engine;
 
     // Raw atomic pointers into the APVTS-managed parameter values, resolved
@@ -100,6 +133,15 @@ private:
     std::atomic<float>* levelDb = nullptr;
     std::atomic<float>* irBlendPercent = nullptr;
     std::atomic<float>* micDistancePercent = nullptr;
+
+    // v0.3.0 audio-thread-polled parameters.
+    std::atomic<float>* blendModeChoice = nullptr;
+    std::atomic<float>* irBTrimDb = nullptr;
+    std::atomic<float>* irBPolarity = nullptr;
+    std::atomic<float>* irBDelayMs = nullptr;
+    std::atomic<float>* distanceAirOn = nullptr;
+    std::atomic<float>* loCutSlopeChoice = nullptr;
+    std::atomic<float>* hiCutSlopeChoice = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NaveAudioProcessor)
 };

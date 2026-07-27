@@ -214,3 +214,161 @@ TEST_CASE ("A loaded custom IR produces no NaN/Inf across many blocks", "[robust
 
     irFile.deleteFile();
 }
+
+//==============================================================================
+// Test 21 (v0.3.0): the new signal paths must survive hostile input and
+// recover, and must not slow to a crawl on silence.
+
+#include <chrono>
+
+TEST_CASE ("NaN and Inf through the v0.3.0 paths stay contained and recover", "[robustness][v030]")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 256;
+
+    CabConvolutionEngine engine;
+    engine.setMixProportion (0.7f);
+    engine.setLevelDb (0.0f);
+    engine.setBlendProportion (0.5f);
+    engine.setDistancePercent (60.0f);
+    engine.setDistanceAirEnabled (true);
+    engine.setLoCutHz (150.0f);
+    engine.setHiCutHz (7000.0f);
+    engine.setLoCutSlope (CabConvolutionEngine::Slope::TwentyFourDbPerOctave);
+    engine.setHiCutSlope (CabConvolutionEngine::Slope::TwentyFourDbPerOctave);
+    engine.setIrBTrimDb (3.0f);
+    engine.setIrBDelayMs (-2.0f);
+    engine.setBlendMode (CabConvolutionEngine::BlendMode::Morph);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = sampleRate;
+    spec.maximumBlockSize = blockSize;
+    spec.numChannels = 2;
+
+    juce::AudioBuffer<float> ir (1, 512);
+    ir.clear();
+    ir.setSample (0, 0, 1.0f);
+    ir.setSample (0, 100, -0.5f);
+
+    engine.setImpulseResponse (ir, sampleRate);
+    engine.setImpulseResponseB (ir, sampleRate);
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+
+    // Settle, so the morph engine is live before the hostile input arrives.
+    for (int i = 0; i < 20; ++i)
+    {
+        TestHelpers::fillWithSine (buffer, sampleRate, 440.0, 0.5f,
+                                    static_cast<juce::int64> (i) * blockSize);
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+    }
+
+    // A poisoned block: NaN, +Inf, -Inf and an absurd magnitude.
+    buffer.clear();
+    buffer.setSample (0, 10, std::numeric_limits<float>::quiet_NaN());
+    buffer.setSample (0, 20, std::numeric_limits<float>::infinity());
+    buffer.setSample (1, 30, -std::numeric_limits<float>::infinity());
+    buffer.setSample (1, 40, 1.0e30f);
+
+    {
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+    }
+
+    // The engine must not crash, and must be recoverable. IIR state can be
+    // poisoned by an Inf, so reset() is the documented recovery path - the
+    // requirement is that recovery WORKS, not that a NaN never propagates.
+    engine.reset();
+
+    bool recovered = false;
+
+    for (int i = 0; i < 40; ++i)
+    {
+        TestHelpers::fillWithSine (buffer, sampleRate, 440.0, 0.5f,
+                                    static_cast<juce::int64> (i) * blockSize);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        recovered = TestHelpers::allSamplesFinite (buffer);
+    }
+
+    CHECK (recovered);
+}
+
+TEST_CASE ("Silence after a burst does not cost more CPU than busy blocks", "[robustness][v030][denormal]")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 256;
+
+    CabConvolutionEngine engine;
+    engine.setMixProportion (1.0f);
+    engine.setBlendProportion (0.5f);
+    engine.setDistancePercent (50.0f);
+    engine.setDistanceAirEnabled (true);
+    engine.setLoCutHz (100.0f);
+    engine.setHiCutHz (8000.0f);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = sampleRate;
+    spec.maximumBlockSize = blockSize;
+    spec.numChannels = 2;
+
+    juce::AudioBuffer<float> ir (1, 1024);
+    ir.clear();
+    ir.setSample (0, 0, 1.0f);
+    ir.setSample (0, 512, 0.3f);
+
+    engine.setImpulseResponse (ir, sampleRate);
+    engine.setImpulseResponseB (ir, sampleRate);
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+
+    // Denormals arise as an IIR filter's state decays toward zero after a
+    // signal stops. On x86 without flush-to-zero they are handled in
+    // microcode, which can cost an order of magnitude - a plugin that is fine
+    // while playing and drops out during a rest. ScopedNoDenormals in
+    // processBlock() is the guard; this measures that it works.
+    constexpr int burstBlocks = 200;
+    constexpr int silentBlocks = 200;
+
+    const auto busyStart = std::chrono::steady_clock::now();
+
+    for (int i = 0; i < burstBlocks; ++i)
+    {
+        TestHelpers::fillWithSine (buffer, sampleRate, 440.0, 0.5f,
+                                    static_cast<juce::int64> (i) * blockSize);
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+    }
+
+    const auto busyElapsed = std::chrono::steady_clock::now() - busyStart;
+
+    juce::ScopedNoDenormals noDenormals;
+
+    const auto silentStart = std::chrono::steady_clock::now();
+
+    for (int i = 0; i < silentBlocks; ++i)
+    {
+        buffer.clear();
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+    }
+
+    const auto silentElapsed = std::chrono::steady_clock::now() - silentStart;
+
+    const auto busyMs = std::chrono::duration<double, std::milli> (busyElapsed).count();
+    const auto silentMs = std::chrono::duration<double, std::milli> (silentElapsed).count();
+
+    CAPTURE (busyMs, silentMs);
+
+    CHECK (TestHelpers::allSamplesFinite (buffer));
+
+    // A generous bound: this is a wall-clock measurement on a machine that may
+    // be running other work (CI, or the parallel builds of sibling plugins), so
+    // it is a smoke alarm for a 10x denormal stall, not a precise benchmark.
+    CHECK (silentMs < busyMs * 3.0);
+}

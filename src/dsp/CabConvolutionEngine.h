@@ -1,5 +1,9 @@
 #pragma once
 
+#include "FractionalDelay.h"
+#include "IrAlignment.h"
+#include "MorphEngine.h"
+
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_dsp/juce_dsp.h>
 
@@ -50,10 +54,85 @@
 // distance, so Nave's single-knob high-shelf is already a simplification of
 // that other axis, not the front-loaded proximity effect - a linear taper
 // there is the honest choice, not an oversight (see design-brief.md).
+// v0.3.0 additions, in signal-flow order:
+//
+//   input -> [convolution: Crossfade of IR A/IR B, or a single Morph IR]
+//         -> IR B branch Trim/Polarity, dual-sided branch Delay
+//         -> Distance Air (time-of-flight pre-delay) -> Distance shelves
+//         -> LoCut (12 or 24 dB/oct) -> HiCut (12 or 24 dB/oct)
+//         -> Dry/Wet mix -> Level
+//
+// Every one of them is neutral at its default, so a v0.2 session renders
+// bit-identically (see src/params/ParameterLayout.cpp and the golden-render
+// null tests in tests/StateTests.cpp).
+//
+// THREADING. The setters split into two groups, and the split is load-bearing:
+//
+//   * Audio-thread-safe (callable every block): the continuous and cheap
+//     controls - LoCut/HiCut/Mix/Level/Blend/Distance, plus blend mode, IR B
+//     trim/polarity/delay, Distance Air and the two filter slopes. None of
+//     them allocate, lock, or touch impulse-response content.
+//
+//   * Message-thread only: the four that change what is actually IN a
+//     convolver - align mode, IR gain mode, and the two per-slot minimum-phase
+//     switches. Each re-runs FFT-scale analysis and reloads the stock
+//     convolution engines, which is neither cheap nor real-time safe.
+//     NaveAudioProcessor routes these through an AsyncUpdater rather than
+//     calling them from processBlock().
+//
+// CLICK POLICY (binding, v0.3.0). juce::dsp::Convolution has no crossfade
+// hook: loadImpulseResponse() resets the engine, which is audible. Making the
+// three message-thread switches above click-free would need duplicate stock
+// instances per slot plus fade plumbing - deliberately out of scope for this
+// release. They are rare, stepped, deliberate configuration changes, and v0.2
+// already hard-swaps audibly on every IR load, so v0.3.0 accepts the same
+// brief reset on them (documented in docs/manual.md). Click-free IR exchange
+// is guaranteed on the Morph path only, where MorphConvolver crossfades two
+// filter sets over a shared input history. Everything continuous - Blend, Mix,
+// Trim, Polarity, Delay, Distance, and the 12<->24 dB/oct slope switch - stays
+// click-free via audio-thread gains, delays and chain crossfades.
 class CabConvolutionEngine
 {
 public:
     CabConvolutionEngine();
+    ~CabConvolutionEngine();
+
+    // How IR A and IR B are combined.
+    enum class BlendMode
+    {
+        // v0.2 behaviour: two convolvers in parallel, their outputs
+        // crossfaded. Simple and predictable, but intermediate positions comb
+        // wherever the two IRs' arrivals differ.
+        Crossfade,
+
+        // A single convolver running a minimum-phase + bulk-delay
+        // interpolation of the two IRs - a true mic-position morph, with
+        // nothing to comb against. See MorphEngine.h.
+        Morph
+    };
+
+    // How a loaded IR is scaled.
+    enum class GainMode
+    {
+        // JUCE's Convolution::Normalise::yes - a flat-weighted energy
+        // reference. Bit-identical to v0.2.
+        Energy,
+
+        // ITU-R BS.1770 K-weighted energy, so two IRs that measure the same
+        // also *sound* equally loud. See IrLoudness.h.
+        Loudness
+    };
+
+    // Filter slope for LoCut/HiCut.
+    enum class Slope
+    {
+        // A single 2nd-order Butterworth section - what v0.2 shipped.
+        TwelveDbPerOctave,
+
+        // Two cascaded 2nd-order sections with the 4th-order Butterworth Q
+        // pair, i.e. a 4th-order Butterworth response.
+        TwentyFourDbPerOctave
+    };
 
     // LoCut/HiCut range boundaries. LoCut's minimum (its default) and
     // HiCut's maximum (its default) are each treated as an explicit "off"
@@ -152,10 +231,160 @@ public:
 
     // Convolution engine latency in samples, valid after prepare() has run.
     // Zero for the default zero-latency convolution configuration this
-    // engine always uses.
+    // engine always uses. Every v0.3.0 delay is a wet-path *effect* (Distance
+    // Air, IR B Delay, the morph's bulk delay), not processing latency, so
+    // none of them are reported here or compensated by the host.
     int getLatencySamples() const noexcept { return latencySamples; }
 
+    //==========================================================================
+    // v0.3.0 audio-thread-safe setters. Safe to call every block: no
+    // allocation, no locks, no impulse-response content touched.
+
+    // Crossfade (default) or Morph. Switching crossfades the two path outputs
+    // over 50 ms - both run during the fade - so the change is audible in
+    // character but not as a click.
+    void setBlendMode (BlendMode newMode) noexcept;
+
+    // IR B branch output trim in dB. Sample-accurate ramp; 0 dB is unity.
+    void setIrBTrimDb (float newTrimDb) noexcept;
+
+    // Inverts the IR B branch. Crossfaded between +1 and -1 over 10 ms, so it
+    // is clickless. Independent of the automatic polarity flip Precise
+    // alignment may apply to the IR buffer itself off-thread.
+    void setIrBPolarityInverted (bool shouldInvert) noexcept;
+
+    // Inter-slot timing offset in milliseconds, +/-5 ms.
+    //
+    // Realised as a DUAL-SIDED branch delay with no internal offset: the IR B
+    // branch delays by max(d, 0) and the IR A branch by max(-d, 0), so both
+    // delay times are always >= 0 and both processors are skipped entirely at
+    // d = 0. That is what makes the neutral setting bit-identical to v0.2 for
+    // every session, including blend-engaged ones, and what keeps the mapping
+    // continuous through zero (max() is continuous, so automating across 0
+    // glides proportionally instead of lurching).
+    //
+    // Deliberately rejected alternatives, recorded so they are not
+    // reintroduced: (a) a constant 5 ms centre-tap offset on both branches
+    // while blend is engaged - this delays the entire wet path of every
+    // upgraded v0.2 blend session by 5 ms, combing against the dry path at
+    // Mix < 100% and stepping 5 ms whenever blend crosses the engage epsilon;
+    // (b) engaging that offset only when d != 0 - a 5 ms pitch glide on first
+    // knob touch. True negative *absolute* B timing without delaying A would
+    // need the IR B buffer shifted earlier off-thread (IrAlignment::
+    // shiftBySamples), which is out of scope for v0.3.0.
+    void setIrBDelayMs (float newDelayMs) noexcept;
+
+    // Adds the time-of-flight pre-delay of the simulated mic distance to the
+    // wet path (2.9 ms at Distance 100%), on top of the Distance shelves'
+    // tonal model. Off by default; at Distance 0% the whole Distance block
+    // keeps its existing explicit bypass regardless.
+    void setDistanceAirEnabled (bool shouldEnable) noexcept;
+
+    // LoCut/HiCut slope. Switching crossfades two independently primed filter
+    // chains over 10 ms, so there is no state-jump click.
+    void setLoCutSlope (Slope newSlope) noexcept;
+    void setHiCutSlope (Slope newSlope) noexcept;
+
+    // Mono-in/stereo-out support: duplicates channel 0 into channel 1 at the
+    // top of the chain, so a guitarist's mono DI fills a stereo bus instead of
+    // playing out of one side. Set from prepareToPlay() once the host's bus
+    // layout is known.
+    void setDuplicateFirstChannel (bool shouldDuplicate) noexcept;
+
+    //==========================================================================
+    // v0.3.0 MESSAGE-THREAD-ONLY setters. Each re-analyses and reloads the
+    // stock convolution engines (see the class-level click policy). Never call
+    // these from processBlock().
+
+    // Legacy (v0.2 onset heuristic) or Precise (cross-correlation with
+    // sub-sample refinement and polarity detection). Re-aligns IR B.
+    void setAlignMode (IrAlignment::Mode newMode);
+
+    // Energy (v0.2, JUCE's normalisation) or Loudness (K-weighted). Reloads
+    // both slots.
+    void setGainMode (GainMode newMode);
+
+    // Per-slot minimum-phase transform. Never destructive: the raw IR is
+    // retained, so switching back restores the original exactly.
+    void setIrAMinPhase (bool shouldApply);
+    void setIrBMinPhase (bool shouldApply);
+
+    //==========================================================================
+    // The longer of the two loaded IRs, in seconds, so the host can size its
+    // tail/render correctly instead of truncating a decaying cabinet.
+    // Zero when both slots hold the default delta IR.
+    double getTailLengthSeconds() const noexcept;
+
+    // The raw (pre-alignment, pre-min-phase, pre-normalisation) IR buffers and
+    // their sample rates, as loaded. These are what gets embedded in the
+    // plugin state, so a saved session reproduces the same IR regardless of
+    // which processing switches were on when it was saved.
+    const juce::AudioBuffer<float>& getRawImpulseResponse (int slotIndex) const noexcept;
+    double getRawImpulseResponseSampleRate (int slotIndex) const noexcept;
+    bool hasUserImpulseResponse (int slotIndex) const noexcept;
+
 private:
+    using Duplicator = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>,
+                                                       juce::dsp::IIR::Coefficients<float>>;
+
+    // A LoCut or HiCut filter that can be either 12 or 24 dB/oct, and can
+    // cross from one to the other without a click.
+    //
+    // Both configurations are kept as SEPARATE filter objects rather than
+    // reconfiguring one in place: a 24 dB/oct cascade's first section uses a
+    // different Q from the 12 dB/oct section, so during a slope change the two
+    // responses must exist simultaneously for their outputs to be crossfaded.
+    // Reconfiguring in place would jump the IIR state instead - the click this
+    // exists to avoid.
+    struct CutFilterChain
+    {
+        Duplicator twelve;        // single 2nd-order section
+        Duplicator twentyFourA;   // 4th-order Butterworth, section 1
+        Duplicator twentyFourB;   // 4th-order Butterworth, section 2
+
+        Slope activeSlope = Slope::TwelveDbPerOctave;
+        Slope previousSlope = Slope::TwelveDbPerOctave;
+        int crossfadeSamplesRemaining = 0;
+
+        void prepare (const juce::dsp::ProcessSpec& spec);
+        void reset();
+    };
+
+    // The two Q values of a 4th-order Butterworth, i.e. the poles' distance
+    // from the unit circle for each cascaded section. Standard analog
+    // prototype values; using 1/sqrt(2) twice instead would give a
+    // Linkwitz-Riley response (-6 dB at cutoff), not Butterworth (-3 dB), and
+    // would not match the 12 dB/oct path's gain at the corner.
+    static constexpr float butterworth4thOrderQ1 = 0.54119610f;
+    static constexpr float butterworth4thOrderQ2 = 1.30656296f;
+
+    // How long a 12 <-> 24 dB/oct slope change takes to cross, and how long an
+    // IR B polarity flip takes. Both are short enough to feel instant and long
+    // enough to avoid a step discontinuity.
+    static constexpr double slopeCrossfadeSeconds = 0.01;
+    static constexpr double polarityCrossfadeSeconds = 0.01;
+
+    // How long a Crossfade <-> Morph switch takes. Longer than the two above
+    // because the two paths can differ substantially in character, so the
+    // transition is a deliberate blend rather than a quick swap.
+    static constexpr double blendModeCrossfadeSeconds = 0.05;
+
+    // Filter coefficients are recomputed at this cadence rather than once per
+    // block, so a fast filter sweep steps 32 samples at a time instead of up
+    // to 1024 (survey gap #8). Small enough to be inaudible, large enough that
+    // the trig in the coefficient formulas stays a rounding error in the CPU
+    // budget.
+    static constexpr int coefficientUpdateInterval = 32;
+
+    // Time of flight for the Distance Air pre-delay: 2.9 ms at Distance 100%,
+    // i.e. sound travelling one metre at ~343 m/s. Distance is a normalised
+    // "how far back is the mic" control, and 100% is defined as a one-metre
+    // pull-out from the cabinet.
+    static constexpr float distanceAirMaxMilliseconds = 2.9f;
+
+    // The IR B Delay control's range, and the delay-line capacity it implies.
+    static constexpr float irBDelayMaxMilliseconds = 5.0f;
+
     static constexpr double smoothingTimeSeconds = 0.05;
     // Butterworth (maximally-flat) Q for both the LoCut and HiCut filters.
     static constexpr float filterQ = juce::MathConstants<float>::sqrt2 / 2.0f;
@@ -204,13 +433,43 @@ private:
     double sampleRate = 44100.0;
     int numChannelsPrepared = 2;
 
+    // Internal helpers. All of these are message-thread only.
+    void applySlot (int slotIndex);
+    void applySlotA();
+    void applySlotB();
+    juce::AudioBuffer<float> prepareSlotForLoading (const juce::AudioBuffer<float>& raw,
+                                                     double rawSampleRate,
+                                                     bool applyMinPhase) const;
+    void loadIntoConvolver (juce::dsp::Convolution& convolver,
+                             juce::AudioBuffer<float> buffer,
+                             double bufferSampleRate);
+
+    // Audio-thread helpers.
+    void updateCutCoefficients (bool loCutBypassed, bool hiCutBypassed, float loCutHz, float hiCutHz) noexcept;
+    void updateDistanceCoefficients (float distancePercent) noexcept;
+    void processCutFilter (CutFilterChain& chain,
+                            juce::dsp::AudioBlock<float>& block,
+                            int numSamples) noexcept;
+
     juce::dsp::Convolution convolution;
     juce::dsp::Convolution convolutionB;
 
-    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> loCutFilter;
-    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> hiCutFilter;
-    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> distanceLowShelfFilter;
-    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> distanceHighShelfFilter;
+    // The Morph path's own convolver + worker (blendMode == Morph). Runs
+    // alongside the stock pair only while a mode crossfade is in flight.
+    MorphEngine morphEngine;
+
+    CutFilterChain loCutFilter;
+    CutFilterChain hiCutFilter;
+
+    Duplicator distanceLowShelfFilter;
+    Duplicator distanceHighShelfFilter;
+
+    // Wet-path fractional delays. All three are skipped entirely when their
+    // delay is zero, so none of them costs anything - or changes anything - at
+    // the default settings.
+    FractionalDelay irBBranchDelay;   // IR B branch, max(irBDelay, 0)
+    FractionalDelay irABranchDelay;   // IR A branch, max(-irBDelay, 0)
+    FractionalDelay distanceAirDelay; // whole wet path, time of flight
 
     juce::dsp::Gain<float> outputLevel;
 
@@ -226,6 +485,12 @@ private:
     // scratchLargeEnough guard for the defensive fallback if a host ever
     // sends a block larger than promised.
     juce::AudioBuffer<float> scratchBuffer;
+
+    // Scratch for the slope crossfade (the not-yet-active chain's output) and
+    // for the Crossfade <-> Morph path crossfade. Both sized in prepare() and
+    // never resized on the audio thread.
+    juce::AudioBuffer<float> slopeScratchBuffer;
+    juce::AudioBuffer<float> morphScratchBuffer;
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> loCutFrequencySmoothed;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> hiCutFrequencySmoothed;
@@ -293,6 +558,58 @@ private:
     juce::AudioBuffer<float> lastIrBRawBuffer;
     double lastIrBRawSampleRate = 44100.0;
     bool irBNeedsAlignment = false;
+
+    //==========================================================================
+    // v0.3.0 state.
+
+    // Slot A's raw buffer, retained for the same reasons slot B's already was
+    // (re-applying min-phase, re-normalising on a gain-mode change) plus one
+    // new one: it is what gets embedded in the saved session, and it is the
+    // reference Precise alignment correlates IR B against.
+    juce::AudioBuffer<float> lastIrARawBuffer;
+    double lastIrARawSampleRate = 44100.0;
+    bool hasUserIrA = false;
+    bool hasUserIrB = false;
+
+    // The post-processing IR A actually loaded into the convolver, kept as the
+    // alignment reference so IR B is correlated against what is really
+    // playing, not against the raw file.
+    juce::AudioBuffer<float> alignmentReferenceBuffer;
+
+    // Loaded IR durations, for getTailLengthSeconds().
+    double irALengthSeconds = 0.0;
+    double irBLengthSeconds = 0.0;
+
+    // Message-thread configuration.
+    IrAlignment::Mode alignMode = IrAlignment::Mode::Precise;
+    GainMode gainMode = GainMode::Energy;
+    bool irAMinPhaseEnabled = false;
+    bool irBMinPhaseEnabled = false;
+
+    // Audio-thread configuration.
+    BlendMode blendMode = BlendMode::Crossfade;
+    bool distanceAirEnabled = false;
+    bool duplicateFirstChannel = false;
+
+    float lastIrBTrimDb = 0.0f;
+    bool lastIrBPolarityInverted = false;
+    float lastIrBDelayMs = 0.0f;
+
+    // Sample-accurate gain smoothers. Blend and Trim advance per sample in the
+    // inner loops rather than being stepped once per block, which is what
+    // removes the zipper noise a 1024-sample block used to produce on a fast
+    // move (survey gap #8). At a static setting they converge to the same
+    // constant v0.2 used, so nothing changes when nothing is moving.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> irBTrimGainSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> irBPolarityGainSmoothed;
+
+    // 0 = fully Crossfade path, 1 = fully Morph path. Both paths run while
+    // this is strictly between the two.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> morphMixSmoothed;
+
+    // Sample counter for the coefficientUpdateInterval sub-block cadence,
+    // carried across blocks so the cadence does not reset at every boundary.
+    int samplesSinceCoefficientUpdate = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CabConvolutionEngine)
 };

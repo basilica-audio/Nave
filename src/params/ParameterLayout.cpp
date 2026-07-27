@@ -90,6 +90,97 @@ namespace nave
             0.0f,
             juce::AudioParameterFloatAttributes().withLabel ("dB")));
 
+        //======================================================================
+        // v0.3.0 parameters. Every default below is deliberately the *neutral*
+        // value - the one at which the corresponding v0.3.0 code path is
+        // either skipped entirely or mathematically an identity - so that a
+        // v0.2 session or preset loaded into this build renders bit-identically
+        // (tests/StateTests.cpp pins this with an -80 dBFS null against a v0.2
+        // golden render, including a blend-engaged session).
+
+        // Blend Mode: Crossfade (default) is exactly the v0.2 parallel-
+        // convolver crossfade. Morph is the v0.3.0 min-phase + bulk-delay
+        // interpolation path.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::blendMode, 1 },
+            "Blend Mode",
+            juce::StringArray { "Crossfade", "Morph" },
+            0));
+
+        // IR Align: Precise is the better algorithm and therefore the default
+        // for *fresh* instances. Upgraded v0.2 sessions are explicitly given
+        // Legacy by the v1 -> v2 state migration (see
+        // src/state/IrStateSerialization.h), which is what keeps this new
+        // default from changing how an existing session sounds.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::alignMode, 1 },
+            "IR Align",
+            juce::StringArray { "Legacy", "Precise" },
+            1));
+
+        // IR B Trim: 0 dB is unity, i.e. the v0.2 branch gain.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::irBTrim, 1 },
+            "IR B Trim",
+            juce::NormalisableRange<float> (-24.0f, 24.0f, 0.01f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB")));
+
+        // IR B Polarity: off is +1, i.e. the v0.2 branch polarity.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::irBPolarity, 1 },
+            "IR B Polarity",
+            false));
+
+        // IR B Delay: 0 ms skips both branch delay processors entirely (see
+        // CabConvolutionEngine.h's dual-sided delay contract), so neither
+        // branch acquires any offset at the default.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::irBDelay, 1 },
+            "IR B Delay",
+            juce::NormalisableRange<float> (-5.0f, 5.0f, 0.01f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
+
+        // IR Gain Match: Energy reproduces v0.2's Normalise::yes exactly.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::irGainMode, 1 },
+            "IR Gain Match",
+            juce::StringArray { "Energy", "Loudness" },
+            0));
+
+        // Per-slot minimum-phase transform: off leaves the raw IR untouched.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::irAMinPhase, 1 },
+            "IR A Min-Phase",
+            false));
+
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::irBMinPhase, 1 },
+            "IR B Min-Phase",
+            false));
+
+        // Distance Air: off adds no wet pre-delay at all (the delay processor
+        // is skipped, not merely set to zero time).
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::distanceAir, 1 },
+            "Distance Air",
+            false));
+
+        // LoCut/HiCut slope: 12 dB/oct is the single 2nd-order section v0.2
+        // shipped, so the default output is bit-identical.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::loCutSlope, 1 },
+            "LoCut Slope",
+            juce::StringArray { "12 dB/oct", "24 dB/oct" },
+            0));
+
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::hiCutSlope, 1 },
+            "HiCut Slope",
+            juce::StringArray { "12 dB/oct", "24 dB/oct" },
+            0));
+
         return layout;
     }
 }

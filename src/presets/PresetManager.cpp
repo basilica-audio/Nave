@@ -26,6 +26,9 @@ namespace basilica::presets
         constexpr const char* nameKey = "name";
         constexpr const char* categoryKey = "category";
         constexpr const char* parametersKey = "parameters";
+
+        // Optional. Absent means the preset predates schema versioning.
+        constexpr const char* schemaVersionKey = "stateVersion";
         constexpr const char* defaultPresetName = "Default";
 
         juce::String legalFileStem (const juce::String& name)
@@ -130,6 +133,18 @@ namespace basilica::presets
         jassert (obj != nullptr); // parseAndValidate() guarantees this
 
         applyPlainValues (obj->getProperty (parametersKey));
+
+        // Schema migration, if the owning plugin asked for one. A preset file
+        // without a "stateVersion" field predates versioning entirely, so it
+        // is reported as version 1.
+        if (config.migrateFromSchemaVersion != nullptr)
+        {
+            const auto declaredVersion = obj->hasProperty (schemaVersionKey)
+                                              ? static_cast<int> (obj->getProperty (schemaVersionKey))
+                                              : 1;
+
+            config.migrateFromSchemaVersion (declaredVersion);
+        }
 
         currentPresetName = name;
         currentPresetIsFactory = isFactory;

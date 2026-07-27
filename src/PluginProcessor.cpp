@@ -2,6 +2,7 @@
 #include "PluginEditor.h"
 #include "params/ParameterIds.h"
 #include "params/ParameterLayout.h"
+#include "state/IrStateSerialization.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -51,6 +52,8 @@ namespace
             { BinaryData::touchOfRoomMic_json, BinaryData::touchOfRoomMic_jsonSize },
             { BinaryData::evenBlend_json, BinaryData::evenBlend_jsonSize },
             { BinaryData::parallelCabBlendedDry_json, BinaryData::parallelCabBlendedDry_jsonSize },
+            { BinaryData::micMorph_json, BinaryData::micMorph_jsonSize },
+            { BinaryData::tightStack_json, BinaryData::tightStack_jsonSize },
         };
     }
 }
@@ -77,13 +80,124 @@ NaveAudioProcessor::NaveAudioProcessor()
     jassert (irBlendPercent != nullptr);
     jassert (micDistancePercent != nullptr);
 
+    blendModeChoice = apvts.getRawParameterValue (ParamIDs::blendMode);
+    irBTrimDb = apvts.getRawParameterValue (ParamIDs::irBTrim);
+    irBPolarity = apvts.getRawParameterValue (ParamIDs::irBPolarity);
+    irBDelayMs = apvts.getRawParameterValue (ParamIDs::irBDelay);
+    distanceAirOn = apvts.getRawParameterValue (ParamIDs::distanceAir);
+    loCutSlopeChoice = apvts.getRawParameterValue (ParamIDs::loCutSlope);
+    hiCutSlopeChoice = apvts.getRawParameterValue (ParamIDs::hiCutSlope);
+
+    jassert (blendModeChoice != nullptr);
+    jassert (irBTrimDb != nullptr);
+    jassert (irBPolarity != nullptr);
+    jassert (irBDelayMs != nullptr);
+    jassert (distanceAirOn != nullptr);
+    jassert (loCutSlopeChoice != nullptr);
+    jassert (hiCutSlopeChoice != nullptr);
+
+    // The four content-changing parameters get listeners rather than
+    // per-block polling - see the AsyncUpdater rationale in PluginProcessor.h.
+    for (const auto* id : { ParamIDs::alignMode, ParamIDs::irGainMode,
+                             ParamIDs::irAMinPhase, ParamIDs::irBMinPhase })
+        apvts.addParameterListener (id, this);
+
+    // Presets carry parameter values but not the plugin's schema version, so
+    // a preset written before v0.3.0 needs the same alignMode migration a
+    // v0.2 session does - otherwise recalling an old preset would silently
+    // upgrade its alignment maths and change how it sounds. Sharing
+    // IrState::migrateParametersIfNeeded() with setStateInformation() means
+    // the two paths can never drift apart.
+    presetManager.setSchemaMigrationCallback ([this] (int declaredVersion)
+    {
+        IrState::migrateParametersIfNeeded (apvts, declaredVersion);
+    });
+
     // M2 default resolution: user "Default" preset > factory "Default"
     // preset > the ParameterLayout defaults apvts was just constructed
     // with above (see PresetManager::applyStartupDefault()'s docs).
     presetManager.applyStartupDefault();
 }
 
-NaveAudioProcessor::~NaveAudioProcessor() = default;
+NaveAudioProcessor::~NaveAudioProcessor()
+{
+    // Both are essential and both must happen before any member is destroyed:
+    // a listener left registered could fire into a half-destroyed processor,
+    // and a pending async callback could do the same.
+    for (const auto* id : { ParamIDs::alignMode, ParamIDs::irGainMode,
+                             ParamIDs::irAMinPhase, ParamIDs::irBMinPhase })
+        apvts.removeParameterListener (id, this);
+
+    cancelPendingUpdate();
+}
+
+void NaveAudioProcessor::parameterChanged (const juce::String&, float)
+{
+    // Real-time safe and coalescing: several parameters changing in one block
+    // produce a single reconfiguration on the message thread.
+    triggerAsyncUpdate();
+}
+
+void NaveAudioProcessor::handleAsyncUpdate()
+{
+    reconfigureEngineFromParameters();
+}
+
+void NaveAudioProcessor::applyAudioThreadParameters()
+{
+    // The cheap half of the v0.3.0 parameter set: gains, delays, modes and
+    // slopes, none of which allocate or touch impulse-response content, so
+    // they can be pushed straight through from the audio thread every block
+    // exactly as the v0.1/v0.2 parameters are.
+    engine.setBlendMode (blendModeChoice->load (std::memory_order_relaxed) > 0.5f
+                              ? CabConvolutionEngine::BlendMode::Morph
+                              : CabConvolutionEngine::BlendMode::Crossfade);
+
+    engine.setIrBTrimDb (irBTrimDb->load (std::memory_order_relaxed));
+    engine.setIrBPolarityInverted (irBPolarity->load (std::memory_order_relaxed) > 0.5f);
+    engine.setIrBDelayMs (irBDelayMs->load (std::memory_order_relaxed));
+    engine.setDistanceAirEnabled (distanceAirOn->load (std::memory_order_relaxed) > 0.5f);
+
+    engine.setLoCutSlope (loCutSlopeChoice->load (std::memory_order_relaxed) > 0.5f
+                               ? CabConvolutionEngine::Slope::TwentyFourDbPerOctave
+                               : CabConvolutionEngine::Slope::TwelveDbPerOctave);
+    engine.setHiCutSlope (hiCutSlopeChoice->load (std::memory_order_relaxed) > 0.5f
+                               ? CabConvolutionEngine::Slope::TwentyFourDbPerOctave
+                               : CabConvolutionEngine::Slope::TwelveDbPerOctave);
+}
+
+void NaveAudioProcessor::reconfigureEngineFromParameters()
+{
+    const auto choiceIndex = [this] (const char* id)
+    {
+        if (auto* parameter = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (id)))
+            return parameter->getIndex();
+
+        return 0;
+    };
+
+    const auto boolValue = [this] (const char* id)
+    {
+        if (auto* parameter = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (id)))
+            return parameter->get();
+
+        return false;
+    };
+
+    // Order matters: gain mode and min-phase both reload slot content, and
+    // alignMode re-derives slot B from whatever slot A ended up as. Setting
+    // alignment last means IR B is aligned against the final IR A.
+    engine.setGainMode (choiceIndex (ParamIDs::irGainMode) == 1
+                             ? CabConvolutionEngine::GainMode::Loudness
+                             : CabConvolutionEngine::GainMode::Energy);
+
+    engine.setIrAMinPhase (boolValue (ParamIDs::irAMinPhase));
+    engine.setIrBMinPhase (boolValue (ParamIDs::irBMinPhase));
+
+    engine.setAlignMode (choiceIndex (ParamIDs::alignMode) == 0
+                              ? IrAlignment::Mode::Legacy
+                              : IrAlignment::Mode::Precise);
+}
 
 //==============================================================================
 juce::AudioProcessorValueTreeState::ParameterLayout NaveAudioProcessor::createParameterLayout()
@@ -114,7 +228,12 @@ bool NaveAudioProcessor::isMidiEffect() const
 
 double NaveAudioProcessor::getTailLengthSeconds() const
 {
-    return 0.0;
+    // v0.3.0 correctness fix. Reporting 0 told the host the plugin had no tail,
+    // so bounce/freeze/bypass operations truncated a decaying cabinet the
+    // moment the source stopped. The real answer is the longer of the two
+    // loaded IRs (0 while both slots hold the default delta, which genuinely
+    // has no tail).
+    return engine.getTailLengthSeconds();
 }
 
 int NaveAudioProcessor::getNumPrograms()
@@ -159,6 +278,18 @@ void NaveAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     engine.setBlendProportion (irBlendPercent->load (std::memory_order_relaxed) * 0.01f);
     engine.setDistancePercent (micDistancePercent->load (std::memory_order_relaxed));
 
+    applyAudioThreadParameters();
+
+    // Mono-in/stereo-out: the host has granted more output channels than input
+    // channels, so the engine fills the extras from channel 0.
+    engine.setDuplicateFirstChannel (getTotalNumInputChannels() == 1
+                                      && getTotalNumOutputChannels() > 1);
+
+    // The content-changing parameters are message-thread work, and
+    // prepareToPlay() is a message-thread call, so they can be applied
+    // directly here rather than going through the AsyncUpdater.
+    reconfigureEngineFromParameters();
+
     engine.prepare (spec);
 
     // The convolution engine is the only potential source of reported
@@ -189,10 +320,15 @@ bool NaveAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) con
     if (mainOut != mono && mainOut != stereo)
         return false;
 
-    if (mainOut != mainIn)
-        return false;
+    // Matched layouts (mono->mono, stereo->stereo) as before, plus mono->stereo
+    // (v0.3.0, survey gap #10): a guitarist's mono DI is the single most common
+    // source for this plugin, and refusing the layout forced hosts to either
+    // wrap it in a converter or play it out of one side. The engine duplicates
+    // channel 0 into channel 1 at the top of the chain.
+    if (mainIn == mainOut)
+        return true;
 
-    return true;
+    return mainIn == mono && mainOut == stereo;
 }
 
 void NaveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -213,6 +349,8 @@ void NaveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     engine.setLevelDb (levelDb->load (std::memory_order_relaxed));
     engine.setBlendProportion (irBlendPercent->load (std::memory_order_relaxed) * 0.01f);
     engine.setDistancePercent (micDistancePercent->load (std::memory_order_relaxed));
+
+    applyAudioThreadParameters();
 
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);
@@ -323,8 +461,43 @@ juce::String NaveAudioProcessor::getCurrentIrFilePathB() const
 }
 
 //==============================================================================
+void NaveAudioProcessor::embedImpulseResponsesIntoState()
+{
+    const auto embedSlot = [this] (int slotIndex, const char* property)
+    {
+        if (! engine.hasUserImpulseResponse (slotIndex))
+        {
+            // No user IR in this slot: clear any blob left from a previous
+            // save, so loading the session does not resurrect an IR the user
+            // has since cleared.
+            apvts.state.removeProperty (property, nullptr);
+            return;
+        }
+
+        // The RAW buffer is embedded - pre-alignment, pre-min-phase,
+        // pre-normalisation. Saving the processed version would bake whatever
+        // switches happened to be on at save time into the audio, so toggling
+        // min-phase off after a reload would no longer restore the original.
+        auto blob = IrState::encodeImpulseResponse (engine.getRawImpulseResponse (slotIndex),
+                                                     engine.getRawImpulseResponseSampleRate (slotIndex));
+
+        if (blob.getSize() > 0)
+            apvts.state.setProperty (property, juce::var (std::move (blob)), nullptr);
+        else
+            apvts.state.removeProperty (property, nullptr);  // over the size cap: path-only
+    };
+
+    embedSlot (0, ParamIDs::irAudioAProperty);
+    embedSlot (1, ParamIDs::irAudioBProperty);
+
+    IrState::stampSchemaVersion (apvts.state);
+}
+
 void NaveAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    // Embedding mutates apvts.state, so it must happen before the snapshot.
+    embedImpulseResponsesIntoState();
+
     const auto state = apvts.copyState();
     const std::unique_ptr<juce::XmlElement> xml (state.createXml());
     copyXmlToBinary (*xml, destData);
@@ -337,46 +510,94 @@ void NaveAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (xmlState == nullptr || ! xmlState->hasTagName (apvts.state.getType()))
         return;
 
-    apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
+    const auto loadedState = juce::ValueTree::fromXml (*xmlState);
+    const auto loadedSchemaVersion = IrState::readSchemaVersion (loadedState);
 
+    apvts.replaceState (loadedState);
+
+    // v1 -> v2 migration, before anything is loaded: it decides which
+    // alignment maths IR B is about to be processed with.
+    IrState::migrateParametersIfNeeded (apvts, loadedSchemaVersion);
+    IrState::stampSchemaVersion (apvts.state);
+
+    // The engine's message-thread configuration comes from parameters that
+    // have just changed wholesale, and it governs how the IRs below are
+    // processed - so it has to be applied first.
+    reconfigureEngineFromParameters();
+
+    restoreImpulseResponsesFromState();
+}
+
+void NaveAudioProcessor::restoreImpulseResponsesFromState()
+{
     // setStateInformation() is a session/preset-load operation, never called
-    // from the audio thread, so the blocking file I/O in
-    // loadImpulseResponseFromFile()/loadImpulseResponseFromFileB() is safe
-    // here. IR A is restored first so it becomes the reference IR B's phase
-    // alignment is computed against (see CabConvolutionEngine::
-    // setImpulseResponseB()), matching how the two are loaded during normal
-    // interactive use (IR A almost always loaded before IR B).
-    const auto irPath = getCurrentIrFilePath();
-
-    if (irPath.isNotEmpty())
+    // from the audio thread, so the blocking file I/O below is safe here. IR A
+    // is restored first so it becomes the reference IR B's phase alignment is
+    // computed against (see CabConvolutionEngine::setImpulseResponseB()),
+    // matching how the two are loaded during normal interactive use (IR A
+    // almost always loaded before IR B).
+    //
+    // Precedence, per slot: EMBEDDED AUDIO first, then the stored path, then
+    // the default delta IR. Embedded audio is authoritative because it is the
+    // only source that cannot have changed since the session was saved - the
+    // file at the stored path may have been edited, replaced, or deleted.
+    const auto restoreSlot = [this] (int slotIndex)
     {
-        const juce::File irFile (irPath);
+        const auto* audioProperty = slotIndex == 0 ? ParamIDs::irAudioAProperty
+                                                    : ParamIDs::irAudioBProperty;
 
-        if (irFile.existsAsFile())
-            loadImpulseResponseFromFile (irFile);
+        const auto loadEmbedded = [&]
+        {
+            const auto value = apvts.state.getProperty (audioProperty);
+
+            if (const auto* blob = value.getBinaryData())
+            {
+                juce::AudioBuffer<float> buffer;
+                double bufferSampleRate = 0.0;
+
+                if (IrState::decodeImpulseResponse (*blob, buffer, bufferSampleRate))
+                {
+                    if (slotIndex == 0)
+                        engine.setImpulseResponse (std::move (buffer), bufferSampleRate);
+                    else
+                        engine.setImpulseResponseB (std::move (buffer), bufferSampleRate);
+
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        if (loadEmbedded())
+            return;
+
+        const auto path = slotIndex == 0 ? getCurrentIrFilePath() : getCurrentIrFilePathB();
+
+        if (path.isNotEmpty())
+        {
+            const juce::File file (path);
+
+            if (file.existsAsFile())
+            {
+                const auto loaded = slotIndex == 0 ? loadImpulseResponseFromFile (file)
+                                                    : loadImpulseResponseFromFileB (file);
+
+                if (loaded)
+                    return;
+            }
+        }
+
+        // No embedded audio and no readable file: fall back cleanly to the
+        // delta IR rather than leaving whatever the previous session had.
+        if (slotIndex == 0)
+            loadDefaultImpulseResponse();
         else
-            loadDefaultImpulseResponse(); // stored IR is missing; fall back cleanly
-    }
-    else
-    {
-        loadDefaultImpulseResponse();
-    }
+            loadDefaultImpulseResponseB();
+    };
 
-    const auto irPathB = getCurrentIrFilePathB();
-
-    if (irPathB.isNotEmpty())
-    {
-        const juce::File irFileB (irPathB);
-
-        if (irFileB.existsAsFile())
-            loadImpulseResponseFromFileB (irFileB);
-        else
-            loadDefaultImpulseResponseB(); // stored IR is missing; fall back cleanly
-    }
-    else
-    {
-        loadDefaultImpulseResponseB();
-    }
+    restoreSlot (0);
+    restoreSlot (1);
 }
 
 //==============================================================================
