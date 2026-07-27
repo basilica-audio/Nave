@@ -41,7 +41,7 @@ namespace MinPhase
     // analysis (see chooseAnalysisOrder/prepareForAnalysis) - documented in
     // docs/manual.md, and inaudible for cabinet IRs, whose usable content is
     // over long before 16384 taps at any normal sample rate.
-    inline constexpr int maxAnalysisSize = 32768;
+    inline constexpr int maxAnalysisSize = 65536;
     inline constexpr int maxIrLengthForAnalysis = maxAnalysisSize / 2;
 
     // The FFT order (log2 size) to analyse an IR of `irLength` taps with:

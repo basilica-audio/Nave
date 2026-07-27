@@ -5,6 +5,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
+
 namespace
 {
     // Convenience wrapper: fetches a parameter by ID and requires it to
@@ -57,7 +59,12 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     SECTION ("all documented parameter IDs resolve")
     {
         static constexpr const char* allIds[] = {
+            // v0.1/v0.2 - IDs frozen, see ParameterIds.h.
             ParamIDs::loCut, ParamIDs::hiCut, ParamIDs::irBlend, ParamIDs::micDistance, ParamIDs::mix, ParamIDs::level,
+            // v0.3.0.
+            ParamIDs::blendMode, ParamIDs::alignMode, ParamIDs::irBTrim, ParamIDs::irBPolarity,
+            ParamIDs::irBDelay, ParamIDs::irGainMode, ParamIDs::irAMinPhase, ParamIDs::irBMinPhase,
+            ParamIDs::distanceAir, ParamIDs::loCutSlope, ParamIDs::hiCutSlope,
         };
 
         for (const auto* id : allIds)
@@ -66,7 +73,55 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
 
     SECTION ("total parameter count matches the current layout")
     {
-        CHECK (apvts.processor.getParameters().size() == 6);
+        // 6 from v0.1/v0.2 plus the 11 added in v0.3.0. This count is
+        // deliberately hard-coded: bumping it should be a conscious act, since
+        // adding a parameter changes every host's automation lane numbering.
+        CHECK (apvts.processor.getParameters().size() == 17);
+    }
+
+    SECTION ("every v0.3.0 parameter defaults to its neutral value")
+    {
+        // The backward-compatibility contract in one place: a v0.2 session
+        // carries none of these IDs, so each one loads at its default, and
+        // every default here must be the value at which the corresponding
+        // v0.3.0 code path is bypassed or an identity. The audible half of this
+        // guarantee is pinned by the golden-render null tests in StateTests.
+        const auto defaultChoiceIndex = [&] (const juce::String& id)
+        {
+            // Via the RangedAudioParameter base: getDefaultValue() is public
+            // there, but private on the concrete AudioParameterChoice/Bool
+            // subclasses in JUCE 8.
+            auto* parameter = requireParam (apvts, id);
+            return static_cast<int> (std::lround (
+                parameter->convertFrom0to1 (parameter->getDefaultValue())));
+        };
+
+        const auto defaultBool = [&] (const juce::String& id)
+        {
+            auto* parameter = requireParam (apvts, id);
+            return parameter->getDefaultValue() > 0.5f;
+        };
+
+        CHECK (defaultChoiceIndex (ParamIDs::blendMode) == 0);   // Crossfade, the v0.2 path
+        CHECK (defaultChoiceIndex (ParamIDs::irGainMode) == 0);  // Energy, JUCE's normalisation
+        CHECK (defaultChoiceIndex (ParamIDs::loCutSlope) == 0);  // 12 dB/oct, the v0.2 filter
+        CHECK (defaultChoiceIndex (ParamIDs::hiCutSlope) == 0);  // 12 dB/oct
+
+        // alignMode is the deliberate exception: fresh instances get the
+        // better algorithm (Precise), and upgraded v0.2 sessions are pinned to
+        // Legacy by the state migration instead of by this default.
+        CHECK (defaultChoiceIndex (ParamIDs::alignMode) == 1);
+
+        CHECK (! defaultBool (ParamIDs::irBPolarity));
+        CHECK (! defaultBool (ParamIDs::irAMinPhase));
+        CHECK (! defaultBool (ParamIDs::irBMinPhase));
+        CHECK (! defaultBool (ParamIDs::distanceAir));
+
+        checkFloatDefault (apvts, ParamIDs::irBTrim, 0.0f);
+        checkFloatDefault (apvts, ParamIDs::irBDelay, 0.0f);
+
+        checkFloatRange (apvts, ParamIDs::irBTrim, -24.0f, 24.0f);
+        checkFloatRange (apvts, ParamIDs::irBDelay, -5.0f, 5.0f);
     }
 
     SECTION ("IR Blend: defaults to IR A only (0%) and covers its documented range")
