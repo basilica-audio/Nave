@@ -450,6 +450,17 @@ TEST_CASE ("IR Blend with two distinct, non-identity IRs in both slots blends th
         engine.setLevelDb (0.0f);
         engine.setBlendProportion (blendProportion);
 
+        // v0.3.0: this test is about the blend's TOPOLOGY (parallel, not
+        // cascaded), so it pins alignment to Legacy. Precise mode would
+        // cross-correlate these two IRs and apply a genuine sub-sample shift
+        // to IR B - correct behaviour, and covered by its own tests in
+        // tests/IrAlignmentTests.cpp, but it would mean the blended render is
+        // no longer a plain linear combination of the two unaligned reference
+        // renders, which is exactly what the arithmetic below checks.
+        // Precise-mode blending is covered separately by the
+        // "Precise alignment does not change the blend topology" case below.
+        engine.setAlignMode (IrAlignment::Mode::Legacy);
+
         const auto spec = makeTestSpec (2);
         engine.prepare (spec);
 
