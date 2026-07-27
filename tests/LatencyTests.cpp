@@ -126,3 +126,56 @@ TEST_CASE ("Latency remains zero with Distance engaged", "[latency]")
 
     CHECK (processor.getLatencySamples() == 0);
 }
+
+//==============================================================================
+// Test 20 (v0.3.0): latency must stay exactly zero in EVERY new configuration.
+//
+// This matters more than it looks. All three v0.3.0 delays - the morph's bulk
+// delay, IR B Delay, and Distance Air - are wet-path EFFECTS, not processing
+// latency. Reporting them would make the host delay-compensate the whole track,
+// shifting it against everything else in the session; the user asked for a
+// delayed cabinet, not a delayed guitar part. Conversely, if a future change
+// ever did introduce real latency, this is where it has to be declared.
+TEST_CASE ("Latency stays zero across every v0.3.0 configuration", "[processor][latency][v030]")
+{
+    NaveAudioProcessor processor;
+
+    auto* alignParameter = processor.apvts.getParameter (ParamIDs::alignMode);
+    auto* blendModeParameter = processor.apvts.getParameter (ParamIDs::blendMode);
+    auto* airParameter = processor.apvts.getParameter (ParamIDs::distanceAir);
+    auto* loSlopeParameter = processor.apvts.getParameter (ParamIDs::loCutSlope);
+    auto* hiSlopeParameter = processor.apvts.getParameter (ParamIDs::hiCutSlope);
+    auto* minPhaseAParameter = processor.apvts.getParameter (ParamIDs::irAMinPhase);
+    auto* minPhaseBParameter = processor.apvts.getParameter (ParamIDs::irBMinPhase);
+    auto* gainModeParameter = processor.apvts.getParameter (ParamIDs::irGainMode);
+    auto* delayParameter = processor.apvts.getParameter (ParamIDs::irBDelay);
+    auto* distanceParameter = processor.apvts.getParameter (ParamIDs::micDistance);
+
+    REQUIRE (alignParameter != nullptr);
+    REQUIRE (blendModeParameter != nullptr);
+    REQUIRE (airParameter != nullptr);
+
+    // Everything at once: morph on, air on, both slopes at 24 dB/oct, both
+    // min-phase switches on, loudness matching on, IR B delayed, distance up.
+    blendModeParameter->setValueNotifyingHost (1.0f);
+    airParameter->setValueNotifyingHost (1.0f);
+    loSlopeParameter->setValueNotifyingHost (1.0f);
+    hiSlopeParameter->setValueNotifyingHost (1.0f);
+    minPhaseAParameter->setValueNotifyingHost (1.0f);
+    minPhaseBParameter->setValueNotifyingHost (1.0f);
+    gainModeParameter->setValueNotifyingHost (1.0f);
+    alignParameter->setValueNotifyingHost (1.0f);
+    delayParameter->setValueNotifyingHost (delayParameter->convertTo0to1 (-3.5f));
+    distanceParameter->setValueNotifyingHost (distanceParameter->convertTo0to1 (80.0f));
+
+    for (const auto sampleRate : { 44100.0, 48000.0, 96000.0 })
+    {
+        for (const auto blockSize : { 32, 128, 512, 1024 })
+        {
+            processor.prepareToPlay (sampleRate, blockSize);
+
+            CAPTURE (sampleRate, blockSize);
+            CHECK (processor.getLatencySamples() == 0);
+        }
+    }
+}

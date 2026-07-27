@@ -902,6 +902,7 @@ TEST_CASE ("LoCut/HiCut ranges match the v2 brief's deliberate-keep decision", "
 
 #include <catch2/generators/catch_generators.hpp>
 
+#include <chrono>
 #include <random>
 
 namespace
@@ -1691,4 +1692,103 @@ TEST_CASE ("Precise alignment does not change the blend topology", "[dsp][engine
     // an exact linear interpolation between them. A cascaded implementation
     // could not satisfy this.
     CHECK (maxResidual < 1.0e-4f);
+}
+
+//==============================================================================
+// Test 23: CPU budget. Tagged [.benchmark] so it is excluded from the default
+// run (wall-clock timing on a machine building eleven sibling plugins in
+// parallel is not a reliable gate) but is available on demand:
+//
+//   ./Tests "[benchmark]"
+//
+// The claim being checked is the one in the design brief: the whole plugin,
+// worst case, under 3% of one core's real-time budget at 48 kHz / 128 samples.
+TEST_CASE ("CPU budget: full chain stays well inside real time", "[.benchmark][dsp][engine][v030]")
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 128;
+    constexpr int numSeconds = 10;
+    constexpr int numBlocks = static_cast<int> (sampleRate * numSeconds / blockSize);
+
+    CabConvolutionEngine engine;
+    engine.setMixProportion (0.9f);
+    engine.setLevelDb (0.0f);
+    engine.setBlendProportion (0.5f);
+    engine.setDistancePercent (55.0f);
+    engine.setDistanceAirEnabled (true);
+    engine.setLoCutHz (110.0f);
+    engine.setHiCutHz (7500.0f);
+    engine.setLoCutSlope (CabConvolutionEngine::Slope::TwentyFourDbPerOctave);
+    engine.setHiCutSlope (CabConvolutionEngine::Slope::TwentyFourDbPerOctave);
+    engine.setIrBTrimDb (-2.0f);
+    engine.setIrBDelayMs (1.5f);
+    engine.setBlendMode (CabConvolutionEngine::BlendMode::Morph);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = sampleRate;
+    spec.maximumBlockSize = blockSize;
+    spec.numChannels = 2;
+
+    // A realistic cabinet IR length rather than a toy one.
+    juce::AudioBuffer<float> ir (1, 4096);
+    ir.clear();
+
+    for (int i = 0; i < 4096; ++i)
+    {
+        const auto decay = std::exp (-6.0f * static_cast<float> (i) / 4096.0f);
+        ir.setSample (0, i, decay * std::sin (0.037f * static_cast<float> (i)));
+    }
+
+    ir.setSample (0, 0, 1.0f);
+
+    engine.setImpulseResponse (ir, sampleRate);
+    engine.setImpulseResponseB (ir, sampleRate);
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+
+    // Warm-up, excluded from the timing.
+    for (int i = 0; i < 100; ++i)
+    {
+        TestHelpers::fillWithSine (buffer, sampleRate, 440.0, 0.5f,
+                                    static_cast<juce::int64> (i) * blockSize);
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+    }
+
+    const auto blocksPerSecond = static_cast<int> (sampleRate / blockSize);
+
+    const auto start = std::chrono::steady_clock::now();
+
+    for (int blockIndex = 0; blockIndex < numBlocks; ++blockIndex)
+    {
+        // One forced morph update per second, so the measurement includes the
+        // resynthesis handoff and the crossfade that follows it rather than
+        // only the steady state.
+        if (blockIndex % blocksPerSecond == 0)
+            engine.setBlendProportion (0.5f + 0.2f * static_cast<float> ((blockIndex / blocksPerSecond) % 2));
+
+        TestHelpers::fillWithSine (buffer, sampleRate, 440.0, 0.5f,
+                                    static_cast<juce::int64> (blockIndex) * blockSize);
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    const auto elapsedSeconds = std::chrono::duration<double> (elapsed).count();
+
+    const auto realtimeFraction = elapsedSeconds / static_cast<double> (numSeconds);
+
+    CAPTURE (elapsedSeconds, realtimeFraction);
+
+    WARN ("Nave v0.3.0 CPU: " << (realtimeFraction * 100.0)
+                               << "% of real time (10 s @ 48 kHz / 128 stereo, morph active)");
+
+    CHECK (TestHelpers::allSamplesFinite (buffer));
+
+    // Soft assert, per the brief: a generous ceiling that still catches an
+    // order-of-magnitude regression. Debug builds carry JUCE's assertions and
+    // no inlining, so the release figure is substantially lower.
+    CHECK (realtimeFraction < 0.30);
 }

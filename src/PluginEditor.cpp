@@ -11,12 +11,19 @@ namespace
     constexpr int textBoxHeight = 20;
     constexpr int labelHeight = 20;
     constexpr int margin = 20;
-    constexpr int numKnobs = 6;
+    constexpr int numKnobs = 8;   // v0.3.0 adds IR B Trim and IR B Delay
+    constexpr int choiceRowHeight = 24;
+    constexpr int toggleRowHeight = 24;
+    constexpr int numChoiceRows = 2;   // 5 combo boxes over two rows
+    constexpr int numToggleRows = 1;
     constexpr int irRowHeight = 30;
     constexpr int buttonWidth = 100;
     constexpr int presetBarHeight = 28;
     constexpr int editorWidth = margin * 2 + numKnobs * knobSize + (numKnobs - 1) * margin;
-    constexpr int editorHeight = margin * 5 + presetBarHeight + irRowHeight * 2 + labelHeight + knobSize + textBoxHeight;
+    constexpr int editorHeight = margin * 6 + presetBarHeight + irRowHeight * 2 + labelHeight
+                                  + knobSize + textBoxHeight
+                                  + numChoiceRows * (choiceRowHeight + margin / 2)
+                                  + numToggleRows * (toggleRowHeight + margin / 2);
 
     // M2 i18n frame (.scaffold/specs/preset-system-m2.md): selects German
     // (resources/i18n/de.txt) or falls through to English, once, at editor
@@ -49,6 +56,20 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
     configureKnob (distanceKnob, ParamIDs::micDistance, "Distance");
     configureKnob (mixKnob, ParamIDs::mix, "Mix");
     configureKnob (levelKnob, ParamIDs::level, "Level");
+
+    configureKnob (irBTrimKnob, ParamIDs::irBTrim, "IR B Trim");
+    configureKnob (irBDelayKnob, ParamIDs::irBDelay, "IR B Delay");
+
+    configureChoice (blendModeChoice, ParamIDs::blendMode, "Blend Mode");
+    configureChoice (alignModeChoice, ParamIDs::alignMode, "IR Align");
+    configureChoice (gainModeChoice, ParamIDs::irGainMode, "IR Gain Match");
+    configureChoice (loCutSlopeChoice, ParamIDs::loCutSlope, "LoCut Slope");
+    configureChoice (hiCutSlopeChoice, ParamIDs::hiCutSlope, "HiCut Slope");
+
+    configureToggle (irBPolarityToggle, ParamIDs::irBPolarity, "IR B Polarity");
+    configureToggle (irAMinPhaseToggle, ParamIDs::irAMinPhase, "IR A Min-Phase");
+    configureToggle (irBMinPhaseToggle, ParamIDs::irBMinPhase, "IR B Min-Phase");
+    configureToggle (distanceAirToggle, ParamIDs::distanceAir, "Distance Air");
 
     irNameLabel.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (irNameLabel);
@@ -99,6 +120,40 @@ void NaveAudioProcessorEditor::configureKnob (Knob& knob, const juce::String& pa
     addAndMakeVisible (knob.label);
 
     knob.attachment = std::make_unique<SliderAttachment> (audioProcessor.apvts, parameterId, knob.slider);
+}
+
+void NaveAudioProcessorEditor::configureChoice (Choice& choice,
+                                                 const juce::String& parameterId,
+                                                 const juce::String& labelText)
+{
+    // ComboBoxAttachment does NOT populate the box (JUCE 8.0.14): it only
+    // synchronises the selected index. The items have to come from the
+    // parameter's own choice list first, or the attachment binds to an empty
+    // box and the control appears blank.
+    if (auto* parameter = dynamic_cast<juce::AudioParameterChoice*> (
+            audioProcessor.apvts.getParameter (parameterId)))
+    {
+        choice.comboBox.addItemList (parameter->choices, 1);
+    }
+
+    addAndMakeVisible (choice.comboBox);
+
+    choice.label.setText (labelText, juce::dontSendNotification);
+    choice.label.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (choice.label);
+
+    // Constructed last, so it finds a populated box to attach to.
+    choice.attachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, parameterId, choice.comboBox);
+}
+
+void NaveAudioProcessorEditor::configureToggle (Toggle& toggle,
+                                                 const juce::String& parameterId,
+                                                 const juce::String& labelText)
+{
+    toggle.button.setButtonText (labelText);
+    addAndMakeVisible (toggle.button);
+
+    toggle.attachment = std::make_unique<ButtonAttachment> (audioProcessor.apvts, parameterId, toggle.button);
 }
 
 void NaveAudioProcessorEditor::updateIrLabel()
@@ -182,11 +237,43 @@ void NaveAudioProcessorEditor::resized()
     irRowB.removeFromRight (margin / 2);
     irNameLabelB.setBounds (irRowB);
 
-    bounds.removeFromTop (margin);
+    bounds.removeFromTop (margin / 2);
+
+    // Two rows of choice controls, then one row of toggles, above the knobs.
+    const auto layoutChoiceRow = [&] (std::initializer_list<Choice*> row)
+    {
+        auto rowBounds = bounds.removeFromTop (choiceRowHeight);
+        const auto cellWidth = rowBounds.getWidth() / static_cast<int> (row.size());
+
+        for (auto* choice : row)
+        {
+            auto cell = rowBounds.removeFromLeft (cellWidth).reduced (margin / 4, 0);
+            choice->label.setBounds (cell.removeFromLeft (cell.getWidth() / 2));
+            choice->comboBox.setBounds (cell);
+        }
+
+        bounds.removeFromTop (margin / 2);
+    };
+
+    layoutChoiceRow ({ &blendModeChoice, &alignModeChoice, &gainModeChoice });
+    layoutChoiceRow ({ &loCutSlopeChoice, &hiCutSlopeChoice });
+
+    {
+        auto toggleRow = bounds.removeFromTop (toggleRowHeight);
+        Toggle* toggles[] = { &irBPolarityToggle, &irAMinPhaseToggle, &irBMinPhaseToggle, &distanceAirToggle };
+        const auto cellWidth = toggleRow.getWidth() / static_cast<int> (std::size (toggles));
+
+        for (auto* toggle : toggles)
+            toggle->button.setBounds (toggleRow.removeFromLeft (cellWidth).reduced (margin / 4, 0));
+
+        bounds.removeFromTop (margin / 2);
+    }
+
     bounds.removeFromTop (labelHeight); // room for the attached labels above each knob
 
     const auto slotWidth = bounds.getWidth() / numKnobs;
 
-    for (auto* knob : { &loCutKnob, &hiCutKnob, &blendKnob, &distanceKnob, &mixKnob, &levelKnob })
+    for (auto* knob : { &loCutKnob, &hiCutKnob, &blendKnob, &distanceKnob,
+                         &irBTrimKnob, &irBDelayKnob, &mixKnob, &levelKnob })
         knob->slider.setBounds (bounds.removeFromLeft (slotWidth).reduced (margin / 2, 0));
 }

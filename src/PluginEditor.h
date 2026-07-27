@@ -21,6 +21,8 @@ public:
 
 private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
     // One knob + label per parameter, in signal-flow order.
     struct Knob
@@ -30,7 +32,26 @@ private:
         std::unique_ptr<SliderAttachment> attachment;
     };
 
+    // v0.3.0 controls, added in the existing plain style rather than as a
+    // redesign - the custom look-and-feel is a separate milestone, and this
+    // release is an engine release. Choice parameters get a ComboBox, bool
+    // parameters a ToggleButton, float parameters another knob.
+    struct Choice
+    {
+        juce::ComboBox comboBox;
+        juce::Label label;
+        std::unique_ptr<ComboBoxAttachment> attachment;
+    };
+
+    struct Toggle
+    {
+        juce::ToggleButton button;
+        std::unique_ptr<ButtonAttachment> attachment;
+    };
+
     void configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText);
+    void configureChoice (Choice& choice, const juce::String& parameterId, const juce::String& labelText);
+    void configureToggle (Toggle& toggle, const juce::String& parameterId, const juce::String& labelText);
     void updateIrLabel();
     void updateIrLabelB();
     void chooseImpulseResponseFile();
@@ -51,6 +72,21 @@ private:
     Knob distanceKnob;
     Knob mixKnob;
     Knob levelKnob;
+
+    // v0.3.0.
+    Knob irBTrimKnob;
+    Knob irBDelayKnob;
+
+    Choice blendModeChoice;
+    Choice alignModeChoice;
+    Choice gainModeChoice;
+    Choice loCutSlopeChoice;
+    Choice hiCutSlopeChoice;
+
+    Toggle irBPolarityToggle;
+    Toggle irAMinPhaseToggle;
+    Toggle irBMinPhaseToggle;
+    Toggle distanceAirToggle;
 
     juce::Label irNameLabel;
     juce::TextButton loadIrButton { "Load IR..." };
