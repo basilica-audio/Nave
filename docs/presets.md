@@ -22,3 +22,25 @@ None of the presets reference specific IR files - loading an IR into slot A/B
 is always a separate, explicit user action (see `docs/manual.md`'s
 "Loading impulse responses" section). "Touch of Room Mic" and "Even Blend"
 only become audible once something real is loaded into slot B.
+
+## v0.3.0 additions
+
+Both new presets need **two IRs loaded** to do anything — like every blend-based preset here, they set the controls, not the cabinets.
+
+### Mic Morph
+
+`blendMode = Morph`, `irBlend = 35%`, `irGainMode = Loudness`.
+
+The release's headline feature as a starting point. Load two captures of the *same* cabinet at different mic positions — on-axis and off-axis, or cap-edge and cone-centre — and sweep IR Blend. Instead of crossfading between them (which combs wherever their arrivals differ), Morph interpolates a single new impulse response, so every intermediate position sounds like a real mic placement rather than two mics fighting.
+
+Loudness gain matching is on so that swapping either capture does not also change the level.
+
+Start at 35% and drag Blend while the track plays; the useful position is usually wherever the low-mids stop sounding hollow.
+
+### Tight Stack
+
+`irBlend = 45%`, `irBTrim = -2.5 dB`, `irBDelay = +0.35 ms`, `loCut = 75 Hz` at 24 dB/oct, `hiCut = 9 kHz`, `irGainMode = Loudness`.
+
+The dual-mic recipe, in Crossfade mode: a main cabinet in slot A and a second, slightly-trimmed capture in slot B pushed 0.35 ms later. That small offset is deliberate — it is the classic console move for thickening a stacked guitar without the phase cancellation of a hard sum, and it is exactly what Nave's alignment removes by default, so this preset puts a controlled amount of it back.
+
+The 24 dB/oct LoCut at 75 Hz clears the sub-bass more decisively than a 12 dB/oct slope would at the same frequency, leaving the body just above it intact.

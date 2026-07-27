@@ -101,3 +101,51 @@ The currently loaded IR files' absolute paths are **not** `AudioProcessorValueTr
 - `CabConvolutionEngine::process()` treats a zero-sample block as a safe no-op before touching any filter/convolution state, and defensively falls back to treating IR Blend as disengaged (rather than risking an out-of-bounds write) if a block ever arrives larger than the scratch buffer `prepare()` sized for it.
 - IR file loading (`loadImpulseResponseFromFile[B]`) is only ever invoked from the message thread (editor) or from `setStateInformation()` (session/preset load) - never from `processBlock()`. The actual `juce::dsp::Convolution::loadImpulseResponse()` call it makes is documented as wait-free regardless. The inter-IR phase-alignment functions it depends on (`IrAlignment::*`) allocate and are likewise only ever called from those same off-audio-thread contexts.
 - Filter/shelf cutoff frequencies passed to `IIR::Coefficients::makeHighPass`/`makeLowPass`/`makeLowShelf`/`makeHighShelf` are clamped below Nyquist where applicable (`clampBelowNyquist`, in `CabConvolutionEngine.cpp`) as defensive insurance against invalid coefficients if the plugin is ever prepared at an unusually low sample rate.
+
+
+## v0.3.0: the Morph path
+
+`blendMode = Morph` replaces the parallel-convolver crossfade with a single convolver running an interpolated IR.
+
+**Why.** Crossfading two IRs sums two signals whose direct arrivals differ in time, which combs — worst at 50%, which is where "between these two mics" lives. Onset alignment (v0.2) fixes the deepest notch but not the residual excess-phase difference across the band.
+
+**How.** Each slot's IR is decomposed off-thread into a minimum-phase magnitude spectrum and a bulk delay. Blend interpolates the log-magnitude (a geometric mean, so shared resonances keep their level instead of dipping) and the bulk delay (separately, so the morph glides in time like a moving mic), and a cepstral resynthesis rebuilds one impulse response. See `src/dsp/MinPhase.h` for the transform and `src/dsp/MorphEngine.h` for the interpolation.
+
+**Threading.** Resynthesis costs several FFTs over up to 65536 points, so it runs on a dedicated worker thread woken by a condition variable and coalesced to the newest blend value. The audio thread never waits: it keeps running the last published IR until a new one arrives.
+
+**The convolver.** `juce::dsp::Convolution` cannot swap IRs without a state reset, so the morph path uses `src/dsp/MorphConvolver.h` — a uniformly-partitioned overlap-save convolver with one shared frequency-domain delay line of input spectra and two filter-spectra sets. Publishing runs both sets against that shared history and crossfades the outputs; the input history is never reset, so there is no discontinuity to hide.
+
+**The crossfade is amplitude-complementary, not equal-power.** Equal-power (sin/cos) gains preserve power, which is correct only for *uncorrelated* sources. Successive morph spectra are the opposite: adjacent blend steps are nearly identical, and republishing an unchanged IR is perfectly correlated. Under sin/cos gains a perfectly-correlated exchange sums to sqrt(2) at the fade midpoint — a +3 dB bump on a swap that should be silent, and audible pumping when a Blend drag makes fades near-continuous. Linear complementary gains sum to exactly 1 everywhere, which makes an identical-IR republish null and a correlated swap level-flat.
+
+## v0.3.0: state schema v2
+
+`apvts.state` carries a `stateVersion` property (absent means v1) plus `irAudioA`/`irAudioB` — gzip'd, channel-planar float32 blobs of each slot's **raw** IR, capped at 10 s per slot. See `src/state/IrStateSerialization.h` for the format.
+
+The raw (pre-alignment, pre-min-phase, pre-normalisation) buffer is what gets embedded. Saving the processed version would bake the switches' current positions into the audio, so toggling min-phase off after a reload would no longer restore the original.
+
+Load precedence per slot: embedded audio, then the stored path, then the default delta IR. Embedded audio wins because it is the only source that cannot have changed since the session was saved.
+
+The v1 -> v2 migration forces `alignMode` to Legacy and nothing else — every other new parameter defaults neutral, so a v1 state that simply lacks them already loads correctly. `alignMode` is the exception because its default (Precise) is right for a *new* session but would change how an existing one sounds. The same function serves `setStateInformation()` and the preset-apply path.
+
+## v0.3.0: dual-sided IR B Delay
+
+`irBDelay` is realised as a dual-sided branch delay with **no internal offset**: the IR B branch delays by `max(d, 0)` and the IR A branch by `max(-d, 0)`. Both times are non-negative, both processors are skipped entirely at `d = 0`, and the mapping is continuous through zero.
+
+This is what keeps every v0.2 session bit-identical — including blend-engaged ones. Two designs were considered and rejected, recorded here so they are not reintroduced:
+
+1. **A constant 5 ms centre-tap offset on both branches while blend is engaged.** This delays the entire wet path of every upgraded blend session by 5 ms, combing against the dry path at Mix < 100% and against host-parallel paths, and steps 5 ms whenever blend automation crosses the engage epsilon.
+2. **Engaging that offset only when `d != 0`.** This produces a smoothed 5 ms pitch glide the first time the knob is touched.
+
+True negative *absolute* B timing without delaying A would require shifting the IR B buffer earlier off-thread (`IrAlignment::shiftBySamples`), which is out of scope for v0.3.0.
+
+## v0.3.0: allocation-free coefficient updates
+
+v0.2 used `*filter.state = *IIR::Coefficients<float>::make...(...)`, which constructs a new ref-counted `Coefficients` object — a heap allocation — on the audio thread on every engaged block. v0.3.0 recomputes coefficients every 32 samples rather than once per block, and a 24 dB/oct slope has two cascaded sections, which would have multiplied that to 64 allocations per filter per 1024-sample block.
+
+`ArrayCoefficients::make...` returns a plain `std::array` by value, and assigning it into an *existing* `Coefficients` object reuses that object's storage rather than replacing the pointer. The storage is allocated once, in `prepare()`. `tests/AllocationGuardTests.cpp` fails against the v0.2 idiom by design — verified at 512 allocations in its measurement window when the old form is restored.
+
+## v0.3.0: the click policy
+
+The two stock `juce::dsp::Convolution` instances have no crossfade hook — `loadImpulseResponse()` is a hard engine reset. Making `irGainMode`, the per-slot min-phase switches, or an `alignMode` change click-free would require duplicate stock instances per slot plus fade plumbing, which this release deliberately scopes to the `MorphConvolver` only.
+
+**Decision:** v0.3.0 accepts a brief IR-load reset on those three switches. They are rare, stepped, off-thread configuration changes, and v0.2 already hard-swaps audibly on every IR load. Click-free IR exchange is guaranteed exclusively on the morph path. Every continuous, automatable control stays click-free: Blend, Mix, IR B Trim/Polarity/Delay and Distance are audio-thread gains and delays, and the 12<->24 dB/oct slope switch crossfades two pre-primed IIR chains.
