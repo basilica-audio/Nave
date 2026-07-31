@@ -7,6 +7,8 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_dsp/juce_dsp.h>
 
+#include <mutex>
+
 // The complete Nave signal path, independent of juce::AudioProcessor so it
 // can be exercised directly by unit tests without instantiating a full
 // plugin (see tests/EngineTests.cpp). Owns all DSP state; every buffer/
@@ -75,10 +77,29 @@
 //
 //   * Message-thread only: the four that change what is actually IN a
 //     convolver - align mode, IR gain mode, and the two per-slot minimum-phase
-//     switches. Each re-runs FFT-scale analysis and reloads the stock
-//     convolution engines, which is neither cheap nor real-time safe.
-//     NaveAudioProcessor routes these through an AsyncUpdater rather than
-//     calling them from processBlock().
+//     switches - plus prepare()/setImpulseResponse()/loadDefaultImpulseResponse()
+//     and their slot-B counterparts. Each re-runs FFT-scale analysis and
+//     reloads the stock convolution engines, which is neither cheap nor
+//     real-time safe. NaveAudioProcessor routes parameter-driven changes
+//     through an AsyncUpdater rather than calling them from processBlock().
+//
+//     "Message-thread only" describes the REQUIRED caller, not an ENFORCED
+//     one: prepareToPlay() (and therefore this group, since it calls
+//     prepare()/reconfigureEngineFromParameters() directly) is invoked by the
+//     host on whatever thread the host chooses - the VST3/AU contract only
+//     guarantees it is not the audio thread, not that it is JUCE's own
+//     MessageManager thread. AsyncUpdater::handleAsyncUpdate() always runs on
+//     the real message thread. Those can be two different OS threads, so a
+//     host that calls prepareToPlay() from its own thread while automating
+//     alignMode/irGainMode/irAMinPhase/irBMinPhase (which arrives via the
+//     audio thread, coalesces through triggerAsyncUpdate(), and fires
+//     handleAsyncUpdate() on the message thread) can end up with two threads
+//     inside this group's methods at once - see #27. Every method in this
+//     group takes messageThreadMutex for exactly that reason: not because
+//     the *audio* thread might call them (it never does), but because two
+//     *different* non-audio threads legitimately can, and
+//     juce::dsp::Convolution::loadImpulseResponse()'s background hand-off is
+//     documented safe only "from a single thread at a time".
 //
 // CLICK POLICY (binding, v0.3.0). juce::dsp::Convolution has no crossfade
 // hook: loadImpulseResponse() resets the engine, which is audible. Making the
@@ -579,6 +600,18 @@ private:
     // Loaded IR durations, for getTailLengthSeconds().
     double irALengthSeconds = 0.0;
     double irBLengthSeconds = 0.0;
+
+    // Serialises every "message-thread only" method (see the THREADING class
+    // doc above and #27) against concurrent entry from two different
+    // non-audio threads - e.g. the host's prepareToPlay()-calling thread
+    // racing the real JUCE message thread's handleAsyncUpdate(). Recursive
+    // because those methods call each other (prepare() calls
+    // loadDefaultImpulseResponse()/loadDefaultImpulseResponseB(); several
+    // setters call applySlotA()/applySlotB()) - a plain mutex would
+    // self-deadlock on the same thread re-entering. Never taken by any
+    // audio-thread method (reset()/process()/the audio-thread-safe setters),
+    // so this adds no lock/allocation on the audio thread.
+    mutable std::recursive_mutex messageThreadMutex;
 
     // Message-thread configuration.
     IrAlignment::Mode alignMode = IrAlignment::Mode::Precise;
