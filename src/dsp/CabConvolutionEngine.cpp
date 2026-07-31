@@ -101,6 +101,8 @@ void CabConvolutionEngine::CutFilterChain::reset()
 
 void CabConvolutionEngine::prepare (const juce::dsp::ProcessSpec& spec)
 {
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     sampleRate = spec.sampleRate;
     numChannelsPrepared = static_cast<int> (spec.numChannels);
 
@@ -370,6 +372,8 @@ void CabConvolutionEngine::setDuplicateFirstChannel (bool shouldDuplicate) noexc
 
 void CabConvolutionEngine::setAlignMode (IrAlignment::Mode newMode)
 {
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     if (newMode == alignMode)
         return;
 
@@ -382,6 +386,8 @@ void CabConvolutionEngine::setAlignMode (IrAlignment::Mode newMode)
 
 void CabConvolutionEngine::setGainMode (GainMode newMode)
 {
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     if (newMode == gainMode)
         return;
 
@@ -395,6 +401,8 @@ void CabConvolutionEngine::setGainMode (GainMode newMode)
 
 void CabConvolutionEngine::setIrAMinPhase (bool shouldApply)
 {
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     if (shouldApply == irAMinPhaseEnabled)
         return;
 
@@ -410,6 +418,8 @@ void CabConvolutionEngine::setIrAMinPhase (bool shouldApply)
 
 void CabConvolutionEngine::setIrBMinPhase (bool shouldApply)
 {
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     if (shouldApply == irBMinPhaseEnabled)
         return;
 
@@ -552,6 +562,8 @@ void CabConvolutionEngine::applySlotB()
 
 void CabConvolutionEngine::setImpulseResponse (juce::AudioBuffer<float> irBuffer, double irSampleRate)
 {
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     // The raw buffer is retained (v0.3.0): it is what the session embeds, what
     // a min-phase or gain-mode switch is re-derived from, and - being
     // pre-processing - what makes those switches non-destructive.
@@ -571,6 +583,8 @@ void CabConvolutionEngine::setImpulseResponse (juce::AudioBuffer<float> irBuffer
 
 void CabConvolutionEngine::loadDefaultImpulseResponse()
 {
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     const auto hadUserIr = hasUserIrA;
 
     hasUserIrA = false;
@@ -615,6 +629,8 @@ void CabConvolutionEngine::loadDefaultImpulseResponse()
 
 void CabConvolutionEngine::setImpulseResponseB (juce::AudioBuffer<float> irBuffer, double irSampleRate)
 {
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     // Retain the raw, pre-processing buffer so a later IR A reload (or a
     // min-phase/gain-mode switch) can re-derive slot B without the caller
     // having to reload the file - see applySlotB() and #13.
@@ -628,6 +644,8 @@ void CabConvolutionEngine::setImpulseResponseB (juce::AudioBuffer<float> irBuffe
 
 void CabConvolutionEngine::loadDefaultImpulseResponseB()
 {
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     hasUserIrB = false;
     irBLengthSeconds = 0.0;
 
