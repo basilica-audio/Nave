@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-31
+
+Crash-fix patch release.
+
+### Fixed
+
+- **Cross-thread race in `CabConvolutionEngine` crashing hosts during automation** (#27). The engine's message-thread-only methods had two unsynchronized entry points - the host's `prepareToPlay()` thread and JUCE's async-updater message thread - which could concurrently call `juce::dsp::Convolution::loadImpulseResponse()`. Its background queue push is only safe from a single thread at a time; concurrent callers corrupted the queued command slots and the loader thread crashed with `std::bad_function_call` (reproduced twice in CI at 96 kHz under pluginval's Automation test). All message-thread-only methods are now serialized behind a mutex that the audio thread never touches - no realtime-safety or behavioral change. Red-verified: the unfixed engine reproduces the crash under a cross-thread reprepare/automation stress test; the fixed engine survives 30+ runs clean (`tests/CrossThreadReprepareTests.cpp`).
+
+### Documentation
+
+- New "Under the hood" engineering section, explicit latency statement, and known-limitations section in the manual; corrected the zero-latency claim to distinguish the stock JUCE engine (Crossfade) from the custom morph convolver path.
+
 ## [0.3.0] - 2026-07-27
 
 "First-class cab engine". Nave becomes the only open IR loader whose two-IR blend is a true mic-position morph - comb-free at every blend value - and closes the gaps that kept it from being a flagship: sessions now embed their IR audio instead of only a file path, IR alignment is a measurement rather than a heuristic, and IR levels can be matched by loudness rather than by raw energy.
