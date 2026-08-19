@@ -76,6 +76,19 @@ juce_add_binary_data(NaveBinaryData SOURCES
     presets/factory/micMorph.json
     presets/factory/tightStack.json
     resources/i18n/de.txt
+    # M3 photoreal GUI assets (resources/gui/, copied from the suite's
+    # Blender pre-render pipeline at .scaffold/gui-assets/ - see each asset
+    # family's README there for provenance/verification). The repo is
+    # self-contained: these copies are the ones the plugin ships with. No
+    # toggle filmstrip or VU-meter assets: Nave's layout-manifest.json has
+    # zero toggle params and no meter bays (see PluginEditorLayout.h).
+    resources/gui/knob_brass_strip_160px_128f.png
+    resources/gui/knob_brass_strip_320px_128f.png
+    resources/gui/faceplate_nave_900x600.png
+    resources/gui/faceplate_nave_1800x1200.png
+    # Brand icon (already the plugin's ICON_BIG; embedded here additionally
+    # so the editor can draw it in the faceplate's header roundel).
+    docs/assets/icon-256.png
 )
 
 # ==============================================================================
