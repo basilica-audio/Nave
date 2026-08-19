@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-**Pilot-gated - not yet released.** This M3 GUI work replicates the
-`basilica-audio/silentium` M3 pilot pattern; it ships on its feature branch
-for review and carries no version bump or tag of its own.
+## [0.4.0] - 2026-08-19
+
+The M3 GUI release: the functional slider/toggle/combo-box editor is replaced by the
+photoreal skeuomorphic faceplate editor, following `basilica-audio/silentium`'s M3
+pilot pattern (PR #23, merged after the pilot sign-off that gated it).
 
 ### Added
 
