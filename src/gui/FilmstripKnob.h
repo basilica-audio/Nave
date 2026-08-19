@@ -32,6 +32,13 @@ namespace basilica::gui
         void mouseDown (const juce::MouseEvent& e) override;
         void mouseDrag (const juce::MouseEvent& e) override;
 
+        // WCAG 2.1.1 Keyboard (issue #5): WAI-ARIA-style stepping (Arrow
+        // 1%, Shift+Arrow fine, PageUp/Down 10%, Home/End extremes) via
+        // KeyboardSteps.h - juce::Slider's own keyPressed (JUCE 8.0.14,
+        // juce_Slider.cpp:1029) steps by the raw parameter interval
+        // (impractically fine here) and swallows Shift entirely.
+        bool keyPressed (const juce::KeyPress& key) override;
+
         // Exposed for unit testing (see tests/gui/FilmstripFrameMathTests.cpp)
         // and used internally by paint(). Pure, side-effect-free: clamps
         // normalisedValue to [0, 1] before scaling, so an out-of-range caller

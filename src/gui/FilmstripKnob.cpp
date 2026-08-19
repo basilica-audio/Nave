@@ -1,6 +1,7 @@
 #include "FilmstripKnob.h"
 #include "BasilicaLookAndFeel.h"
 #include "ImageDensity.h"
+#include "KeyboardSteps.h"
 
 namespace basilica::gui
 {
@@ -24,6 +25,13 @@ namespace basilica::gui
         // separate JUCE-drawn label pass (BasilicaLookAndFeel), see
         // PluginEditor's layout table.
         setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+
+        // Keyboard navigation (issue #5, WCAG 2.1.1): juce::Slider::init()
+        // ships with setWantsKeyboardFocus(false) in JUCE 8.0.14
+        // (juce_Slider.cpp:1461) - without opting back in, Tab never
+        // reaches the knob, paint()'s focus ring can never show, and
+        // keyPressed() below never fires.
+        setWantsKeyboardFocus (true);
     }
 
     FilmstripKnob::~FilmstripKnob() = default;
@@ -60,6 +68,11 @@ namespace basilica::gui
         // paintFocusRing() docs.
         if (hasKeyboardFocus (true))
             paintFocusRing (g, getLocalBounds().toFloat(), FocusRingShape::ellipse);
+    }
+
+    bool FilmstripKnob::keyPressed (const juce::KeyPress& key)
+    {
+        return handleSliderKeyPress (*this, key) || juce::Slider::keyPressed (key);
     }
 
     void FilmstripKnob::mouseDown (const juce::MouseEvent& e)
