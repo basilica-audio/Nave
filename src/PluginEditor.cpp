@@ -2,6 +2,7 @@
 #include "PluginEditorLayout.h"
 #include "PluginProcessor.h"
 #include "gui/ImageDensity.h"
+#include "ir/IrLibrary.h"
 #include "params/ParameterIds.h"
 #include "presets/Localisation.h"
 
@@ -140,6 +141,41 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
     configureIrSlot (irSlotA, IrSlotId::A, "IR A");
     configureIrSlot (irSlotB, IrSlotId::B, "IR B");
 
+    // The IR browser overlay (issue #1): added LAST so it sits above every
+    // other child when visible (z-order follows add order). Hidden until a
+    // slot's Browse... button opens it; the editor owns visibility and the
+    // slot targeting, the panel owns scanning/filtering/selection (see
+    // IrBrowserPanel.h).
+    irBrowserPanel.onIrChosen = [this] (const juce::File& irFile)
+    {
+        const auto loaded = irBrowserTargetSlot == IrSlotId::A
+                                 ? audioProcessor.loadImpulseResponseFromFile (irFile)
+                                 : audioProcessor.loadImpulseResponseFromFileB (irFile);
+
+        if (loaded)
+            refreshIrSlotLabel (slotFor (irBrowserTargetSlot), irBrowserTargetSlot, irBrowserTargetLabel);
+    };
+    irBrowserPanel.onLibraryFolderChanged = [this] (const juce::File& newFolder)
+    {
+        // Same plain-ValueTree-property persistence as the IR file paths
+        // themselves (ParamIDs::irLibraryFolderProperty's docs).
+        audioProcessor.apvts.state.setProperty (ParamIDs::irLibraryFolderProperty,
+                                                newFolder.getFullPathName(), nullptr);
+    };
+    irBrowserPanel.onDismiss = [this]
+    {
+        irBrowserPanel.setVisible (false);
+
+        // Hand keyboard focus back to the Browse... button that opened the
+        // overlay, so a keyboard/AT user lands where they left off.
+        // grabKeyboardFocus() needs a live native peer - absent in headless
+        // tests, hence the guard.
+        auto& browseButton = slotFor (irBrowserTargetSlot).browseButton;
+        if (browseButton.isShowing())
+            browseButton.grabKeyboardFocus();
+    };
+    addChildComponent (irBrowserPanel);
+
     setResizable (false, false);
 
     const auto storedStep = (int) audioProcessor.apvts.state.getProperty (uiScaleStepProperty, 0);
@@ -214,6 +250,12 @@ void NaveAudioProcessorEditor::configureIrSlot (IrSlot& slot, IrSlotId id, const
     addAndMakeVisible (slot.nameLabel);
     refreshIrSlotLabel (slot, id, slotLabel);
 
+    slot.browseButton.setComponentID (idPrefix + ".browseButton");
+    slot.browseButton.setButtonText ("Browse...");
+    slot.browseButton.setTitle ("Browse impulse response library, " + slotLabel);
+    slot.browseButton.onClick = [this, id, slotLabel] { openIrBrowserForSlot (id, slotLabel); };
+    addAndMakeVisible (slot.browseButton);
+
     slot.loadButton.setComponentID (idPrefix + ".loadButton");
     slot.loadButton.setButtonText ("Load IR...");
     slot.loadButton.setTitle ("Load impulse response, " + slotLabel);
@@ -268,6 +310,26 @@ void NaveAudioProcessorEditor::chooseImpulseResponseForSlot (IrSlot& slot, IrSlo
         if (loaded)
             refreshIrSlotLabel (slot, id, slotLabel);
     });
+}
+
+NaveAudioProcessorEditor::IrSlot& NaveAudioProcessorEditor::slotFor (IrSlotId id) noexcept
+{
+    return id == IrSlotId::A ? irSlotA : irSlotB;
+}
+
+void NaveAudioProcessorEditor::openIrBrowserForSlot (IrSlotId id, const juce::String& slotLabel)
+{
+    irBrowserTargetSlot = id;
+    irBrowserTargetLabel = slotLabel;
+
+    const auto storedFolder = audioProcessor.apvts.state
+                                  .getProperty (ParamIDs::irLibraryFolderProperty, juce::String())
+                                  .toString();
+
+    const auto libraryFolder = storedFolder.isNotEmpty() ? juce::File (storedFolder)
+                                                         : basilica::ir::IrLibrary::defaultDirectory();
+
+    irBrowserPanel.open (slotLabel, libraryFolder);
 }
 
 void NaveAudioProcessorEditor::cycleScale()
@@ -378,12 +440,20 @@ void NaveAudioProcessorEditor::resized()
         auto buttonRow = juce::Rectangle<int> (slotBounds.getX(), slotBounds.getY() + verticalPad + labelHeight + rowGap,
                                                 slotBounds.getWidth(), buttonHeight);
 
-        const auto loadWidth = (int) std::lround ((float) (buttonRow.getWidth() - buttonGap) * 0.6f);
-        slot.loadButton.setBounds (buttonRow.removeFromLeft (loadWidth));
+        // Three equal-width buttons per slot: Browse... (the IR browser
+        // overlay), Load IR... (direct file chooser), Default (revert).
+        const auto buttonWidth = (buttonRow.getWidth() - 2 * buttonGap) / 3;
+        slot.browseButton.setBounds (buttonRow.removeFromLeft (buttonWidth));
+        buttonRow.removeFromLeft (buttonGap);
+        slot.loadButton.setBounds (buttonRow.removeFromLeft (buttonWidth));
         buttonRow.removeFromLeft (buttonGap);
         slot.defaultButton.setBounds (buttonRow);
     };
 
     layoutSlot (irSlotA, irBay.getX());
     layoutSlot (irSlotB, irBay.getX() + halfW);
+
+    // The browser overlay always spans the full editor (it paints its own
+    // scrim + centred panel), at every scale step.
+    irBrowserPanel.setBounds (getLocalBounds());
 }

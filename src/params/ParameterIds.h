@@ -111,6 +111,13 @@ namespace ParamIDs
     inline constexpr auto irFilePathProperty = "irFilePath";
     inline constexpr auto irFilePathBProperty = "irFilePathB";
 
+    // Also not an APVTS parameter: the IR browser's library folder (the
+    // directory src/gui/IrBrowserPanel.h scans for impulse responses),
+    // persisted the same way as the IR file paths above so the user's
+    // library choice survives session save/reload. Absent/empty means "use
+    // basilica::ir::IrLibrary::defaultDirectory()".
+    inline constexpr auto irLibraryFolderProperty = "irLibraryFolder";
+
     // v0.3.0 state schema v2 (see src/state/IrStateSerialization.h). Also not
     // APVTS parameters: an int schema version stamped on apvts.state, and the
     // two gzip'd embedded IR audio blobs that make a saved session

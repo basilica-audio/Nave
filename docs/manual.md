@@ -42,6 +42,18 @@ Nave has **two independent IR slots**, A and B:
 - **IR A** — the primary/original slot. Use the **Load IR...** button to pick a `.wav`/`.aiff` cabinet IR file; **Default** clears it back to the built-in transparent delta IR.
 - **IR B** — a secondary slot, loaded and cleared the same way via **Load IR B...** / **Default**. On its own it does nothing (see [IR Blend](#ir-blend) below) — it only matters once you dial in some Blend.
 
+### The IR browser
+
+Each slot also has a **Browse...** button that opens the **IR browser**: an overlay listing every `.wav`/`.aiff` file found (recursively) under your IR library folder, so you can audition across a whole library instead of round-tripping through a file dialog per IR.
+
+- **Selecting a row loads it into the slot immediately** — click through the list, or focus it and step with the arrow keys, and you are auditioning cabs in real time. Note that (as with any IR load outside Morph) each swap is a hard engine reload, so audition while the track is looping quietly, not mid-take.
+- **Return or double-click** loads the selected IR and closes the browser; **Escape** or **Close** just closes it (the last auditioned IR stays loaded).
+- The **filter box** narrows the list by name (case-insensitive substring, matched against the path relative to the library folder).
+- **Folder...** points the browser at your own IR library directory. The choice is saved with the plugin state. Out of the box it looks in `Music/Nave/Impulse Responses` under your user folder.
+- The folder scan runs in the background (a huge library or a network drive never freezes the UI) and is capped at 2000 files.
+
+The browser and the per-slot **Load IR...** file dialog load through exactly the same path — use whichever fits the moment.
+
 **Your IR audio is saved inside the session** (new in v0.3.0). Up to 10 seconds per slot of the loaded IR is stored in the plugin's own state, so a project reopens with the same cabinets even if the original files have been moved, renamed, deleted, or left on another machine. The file paths are still saved alongside, so the editor can tell you where an IR came from — but the sound no longer depends on them. (Before v0.3.0 only the path was saved, and a missing file silently reverted the slot to the transparent default. If you have older projects, reopening and re-saving them in v0.3.0 makes them self-contained.) An IR longer than 10 seconds is still stored path-only, since a cabinet IR is never that long and embedding one would bloat your session file.
 
 ### IR Gain Match

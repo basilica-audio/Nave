@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **IR browser** (issue #1's final code-scope item): a per-slot **Browse...** button opens a full-editor overlay that lists every `.wav`/`.aiff` under a user-chosen IR library folder (recursive background scan on a dedicated thread, 2000-file cap, deterministic sort), with audition-on-select (arrowing through the list swaps IRs live), Return/double-click to load-and-close, Escape/scrim-click to dismiss, a case-insensitive substring filter, and full keyboard/AT operability (focus ring on the list, accessible row names, slot-specific button titles). The library folder persists in the plugin state (`irLibraryFolder` property, default `Music/Nave/Impulse Responses`). New backbone in `src/ir/IrLibrary.{h,cpp}` (pure scan helpers + restartable background scanner) and `src/gui/IrBrowserPanel.{h,cpp}` (suite-reusable overlay styled via `BasilicaLookAndFeel`), covered by 16 new tests (`tests/IrLibraryTests.cpp`, `tests/gui/IrBrowserPanelTests.cpp`). No bundled IR content ships with it - see issue #1's closing note on licensing-safe curation.
+
 ## [0.4.0] - 2026-08-19
 
 The M3 GUI release: the functional slider/toggle/combo-box editor is replaced by the
