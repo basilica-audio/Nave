@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-20
 
 ### Fixed
 
@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CabConvolutionEngine::reset()` was a third, unreported instance of the same defect - it calls `Convolution::reset()` on both slots and was documented as audio-thread-safe. It is now serialised behind the same `messageThreadMutex` as the other host-callback entry points, and documented as message-thread-only. This adds no lock to the audio thread: `AudioProcessor::reset()` is a host *control* callback in the same family as `prepareToPlay()` - JUCE's VST3 wrapper calls it from `setProcessing(false)`, and its AU wrapper's `Reset()` calls `prepareToPlay()` (which allocates) immediately before it.
 
   Red-verified: the pre-fix engine crashes under `tests/AudioThreadConvolutionResetTests.cpp` (6 aborts/segfaults in 23 runs, both `SIGABRT` and `SIGSEGV`). The reset half of the fix alone brought that to 1 crash in 60 runs - the residual producer pair above; with both halves the test runs clean.
+- **Knobs are keyboard-operable, with practical step sizes** (#31, closes #5). `FilmstripKnob` never opted back into keyboard focus — `juce::Slider` ships `setWantsKeyboardFocus(false)` in JUCE 8.0.14 — so Tab never reached the six knobs, the WCAG 2.4.7 focus ring in `paint()` could never show, and key events never fired. Even when focused, the stock `keyPressed` stepped by the raw parameter interval (0.1 over Mix's 100-unit range) and ignored Shift. `src/gui/KeyboardSteps.h` adds the suite-reusable WAI-ARIA-style stepping helper (Arrow 1 %, Shift+Arrow 0.1 % fine, PageUp/Down 10 %, Home/End extremes) with proportional-domain stepping and interval snapping preserved; `tests/gui/EditorAccessibilityTests.cpp` pins focusability of all six knobs plus the scale button, the coarse/fine/page/home-end stepping on Mix, and Ctrl/Cmd passthrough.
 
 ### Changed
 
