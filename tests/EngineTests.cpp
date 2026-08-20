@@ -511,39 +511,64 @@ TEST_CASE ("IR Blend with two distinct, non-identity IRs in both slots blends th
     }
 }
 
-TEST_CASE ("convolutionB is reset on Blend's disengaged->engaged transition, not left carrying a stale overlap tail",
+TEST_CASE ("Blend re-engagement never replays convolutionB's frozen overlap tail",
            "[dsp][engine][blend]")
 {
-    // Regression coverage for #12. juce::dsp::Convolution's zero-latency
-    // uniformly-partitioned algorithm carries an internal overlap-add tail
-    // ("bufferOverlap"/"overlapData" in JUCE 8.0.14's juce_Convolution.cpp)
-    // that is only ever mutated inside processSamples() - process() below
-    // skips convolutionB.process() entirely for every block Blend is
-    // disengaged, so that tail is frozen (not decaying) for as long as
-    // Blend stays disengaged.
+    // Regression coverage for #12, rebuilt in #34.
     //
-    // Each block here is a single full-size (testBlockSize) call rather than
-    // many small ones deliberately: testBlockSize's duration (~170 ms at
-    // 48 kHz) comfortably exceeds the engine's internal parameter-smoothing
-    // ramp (50 ms, see CabConvolutionEngine::smoothingTimeSeconds), so
-    // blendSmoothed.skip() settles fully to its new target *within* the very
-    // next block - Blend's disengaged/engaged state is then clean and
-    // block-atomic, with no partially-ramped blocks in between to muddy
-    // which state was actually in effect when.
-    constexpr int irLength = 512; // several times shorter than testBlockSize,
-                                   // so its full ring-down tail fits inside
-                                   // one process() call's overlap-add state
+    // juce::dsp::Convolution's zero-latency uniformly-partitioned algorithm
+    // carries an internal overlap-add tail ("bufferOverlap"/"overlapData" in
+    // JUCE 8.0.14's juce_Convolution.cpp) that is only ever mutated inside
+    // processSamples(). CabConvolutionEngine::process() skips
+    // convolutionB.process() entirely for every block the IR B branch is
+    // inactive, so that tail is frozen - not decaying - for as long as the
+    // branch stays inactive, and would be spliced back into the output,
+    // arbitrarily long after the audio that produced it, the moment the
+    // branch runs again.
+    //
+    // WHY THIS TEST WAS REWRITTEN. Its previous form (#18) drove three
+    // full-size 8192-sample blocks: loud/engaged, silent/"disengaged",
+    // silent/re-engaged. That never exercised the guarantee it asserted, for
+    // two compounding reasons:
+    //
+    //   * process() treats the branch as engaged when EITHER end of Blend's
+    //     smoothing ramp is above the epsilon, so the middle block - with
+    //     the smoother still at 1.0 at its start and only ramping down to 0
+    //     across it - still ran convolutionB. The branch was never actually
+    //     inactive, so nothing was ever frozen.
+    //   * that middle block fed the convolver 8192 samples of silence, i.e.
+    //     sixteen times the IR's own length, which decays its tail to
+    //     nothing all by itself.
+    //
+    // Verified during #34: the old test passed unchanged with the mechanism
+    // under test deleted outright. This version uses blocks shorter than
+    // Blend's 50 ms ramp, keeps the input LOUD while the ramp runs down (so
+    // the branch is frozen holding a fresh, high-energy tail rather than a
+    // self-decayed one), and only then re-engages against silence - so it
+    // fails, loudly, if the mechanism is removed.
+    constexpr int blockSize = 256;      // ~5 ms at 48 kHz, well inside the
+                                        // engine's 50 ms smoothing ramp
+    constexpr int rampBlocks = 16;      // > 50 ms: enough for Blend to reach
+                                        // its target and the branch to go
+                                        // genuinely inactive
+    constexpr int frozenBlocks = 40;    // comfortably longer than the silent
+                                        // flush the fix arms on disengagement
+    constexpr int irLength = 512;
 
     CabConvolutionEngine engine;
     engine.setMixProportion (1.0f);
     engine.setLevelDb (0.0f);
     engine.setBlendProportion (1.0f); // engaged from the start
 
-    const auto spec = makeTestSpec (2);
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = testSampleRate;
+    spec.maximumBlockSize = static_cast<juce::uint32> (blockSize);
+    spec.numChannels = 2;
+
     engine.prepare (spec);
 
-    // A long, high-energy, slowly-decaying IR B, so any leaked overlap tail
-    // is unmistakable rather than lost in floating-point noise.
+    // A high-energy, slowly-decaying IR B, so any leaked overlap tail is
+    // unmistakable rather than lost in floating-point noise.
     juce::AudioBuffer<float> irB (1, irLength);
     for (int i = 0; i < irLength; ++i)
         irB.setSample (0, i, 0.8f * std::pow (0.995f, static_cast<float> (i)));
@@ -551,36 +576,253 @@ TEST_CASE ("convolutionB is reset on Blend's disengaged->engaged transition, not
     engine.setImpulseResponseB (std::move (irB), testSampleRate);
     engine.prepare (spec); // guarantee the async load is drained/active
 
-    juce::AudioBuffer<float> buffer (2, testBlockSize);
+    juce::AudioBuffer<float> buffer (2, blockSize);
 
-    // One loud, engaged block: builds real, non-trivial state in
-    // convolutionB's internal overlap-add buffer (its ring-down tail
-    // extends past this block's end, into what would be the next call).
-    TestHelpers::fillWithSine (buffer, testSampleRate, testFrequencyHz, 0.9f);
-    juce::dsp::AudioBlock<float> engagedBlock (buffer);
-    engine.process (engagedBlock);
-    CHECK (TestHelpers::allSamplesFinite (buffer));
+    const auto processLoudBlock = [&]
+    {
+        TestHelpers::fillWithSine (buffer, testSampleRate, testFrequencyHz, 0.9f);
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+        CHECK (TestHelpers::allSamplesFinite (buffer));
+    };
 
-    // Disengage Blend for one full block. convolutionB.process() is skipped
-    // entirely for it, so its internal state - including that ring-down
-    // tail - is frozen exactly where the block above left it, not decayed.
+    // Engaged and loud: builds real, high-energy state in convolutionB's
+    // internal overlap-add buffer.
+    for (int i = 0; i < rampBlocks; ++i)
+        processLoudBlock();
+
+    // Disengage, but keep driving loud audio while Blend's ramp runs down.
+    // The branch is still active for these blocks, so the convolver's tail
+    // stays hot right up to the moment it is frozen - which is the state
+    // #12 is about.
     engine.setBlendProportion (0.0f);
-    buffer.clear();
-    juce::dsp::AudioBlock<float> disengagedBlock (buffer);
-    engine.process (disengagedBlock);
 
-    // Re-engage Blend and feed pure silence. With convolutionB correctly
-    // reset on the disengaged->engaged transition, silence in must produce
-    // silence out. Without the reset (the bug), the frozen overlap-add tail
-    // from the loud block above gets added back into this block's output.
+    for (int i = 0; i < rampBlocks; ++i)
+        processLoudBlock();
+
+    // Now genuinely disengaged. Keep feeding loud audio: it must not reach
+    // convolutionB at all (the branch is inactive), so this neither refreshes
+    // nor decays the frozen tail.
+    for (int i = 0; i < frozenBlocks; ++i)
+        processLoudBlock();
+
+    // Re-engage against pure silence. Silence in must produce silence out for
+    // the whole ramp back up: there must be nothing left inside convolutionB
+    // that predates the disengagement.
     engine.setBlendProportion (1.0f);
-    buffer.clear();
 
-    juce::dsp::AudioBlock<float> reengagedBlock (buffer);
-    engine.process (reengagedBlock);
+    float worstPeak = 0.0f;
 
-    CHECK (TestHelpers::allSamplesFinite (buffer));
-    CHECK (TestHelpers::peakAbsolute (buffer) < nullTestTolerance);
+    for (int i = 0; i < rampBlocks; ++i)
+    {
+        buffer.clear();
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+
+        CHECK (TestHelpers::allSamplesFinite (buffer));
+        worstPeak = juce::jmax (worstPeak, TestHelpers::peakAbsolute (buffer));
+    }
+
+    INFO ("worst peak across the re-engagement ramp: " << worstPeak);
+    CHECK (worstPeak < nullTestTolerance);
+}
+
+TEST_CASE ("A running silent flush cannot reach the output: Blend at 0 still nulls against the input",
+           "[dsp][engine][blend][null]")
+{
+    // #34's fix keeps convolutionB running on silence for one IR length
+    // after the IR B branch goes inactive. This pins the property that makes
+    // that inaudible rather than merely quiet: the flush writes into
+    // scratchBuffer only, never into the block, so a disengaged Blend is
+    // still the exact v0.1 IR-A-only signal path - here, with the default
+    // delta IR in slot A, a bit-accurate passthrough - for every block of
+    // the flush window and beyond.
+    constexpr int blockSize = 256;
+    constexpr int rampBlocks = 16;
+    constexpr int irLength = 512;
+
+    CabConvolutionEngine engine;
+    engine.setLoCutHz (CabConvolutionEngine::loCutMinHz);
+    engine.setHiCutHz (CabConvolutionEngine::hiCutMaxHz);
+    engine.setMixProportion (1.0f);
+    engine.setLevelDb (0.0f);
+    engine.setDistancePercent (CabConvolutionEngine::distanceMinPercent);
+    engine.setBlendProportion (1.0f);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = testSampleRate;
+    spec.maximumBlockSize = static_cast<juce::uint32> (blockSize);
+    spec.numChannels = 2;
+
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> irB (1, irLength);
+    for (int i = 0; i < irLength; ++i)
+        irB.setSample (0, i, 0.8f * std::pow (0.995f, static_cast<float> (i)));
+
+    engine.setImpulseResponseB (std::move (irB), testSampleRate);
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::AudioBuffer<float> reference (2, blockSize);
+    juce::int64 sampleOffset = 0;
+
+    const auto processOneBlock = [&]
+    {
+        TestHelpers::fillWithSine (reference, testSampleRate, testFrequencyHz, 0.9f, sampleOffset);
+        buffer.makeCopyOf (reference);
+        sampleOffset += blockSize;
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+    };
+
+    // Engaged and loud, so the disengagement below arms a flush with real
+    // energy still inside the convolver.
+    for (int i = 0; i < rampBlocks; ++i)
+        processOneBlock();
+
+    engine.setBlendProportion (0.0f);
+
+    for (int i = 0; i < rampBlocks; ++i)
+        processOneBlock();
+
+    // From here the branch is inactive and the flush is counting down.
+    // Every one of these blocks must null against its own input.
+    float worstResidual = 0.0f;
+
+    for (int i = 0; i < rampBlocks * 4; ++i)
+    {
+        processOneBlock();
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+            for (int sample = 0; sample < blockSize; ++sample)
+                worstResidual = juce::jmax (worstResidual,
+                                             std::abs (buffer.getSample (channel, sample)
+                                                        - reference.getSample (channel, sample)));
+    }
+
+    INFO ("worst passthrough residual during and after the flush: " << worstResidual);
+    CHECK (worstResidual < nullTestTolerance);
+}
+
+TEST_CASE ("Re-engaging Blend inside the flush window stays continuous rather than clicking",
+           "[dsp][engine][blend]")
+{
+    // The counterpart to the stale-tail test, and part of why #34 chose a
+    // bounded silent flush over deferring convolutionB.reset() onto the
+    // message thread: during the flush window the convolver is still
+    // running, just on silence, so its tail keeps decaying rather than being
+    // truncated at whatever amplitude a reset caught it at.
+    //
+    // The bound is deliberately stated against BOTH steady states rather
+    // than only the engaged one. Blend crossfades between the IR A path
+    // (here the default delta IR, so the raw input, which steps fastest) and
+    // the IR B path (a heavily low-passed version of it, which steps
+    // slowest), so a ramp that is mostly A legitimately steps far more than
+    // a settled all-B passage does. What must NOT happen is a step larger
+    // than either endpoint produces on its own - that is what a click is.
+    constexpr int blockSize = 256;
+    constexpr int rampBlocks = 16;
+    constexpr int irLength = 512;
+
+    const auto maximumStep = [] (const juce::AudioBuffer<float>& buffer)
+    {
+        float worst = 0.0f;
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        {
+            const auto* data = buffer.getReadPointer (channel);
+
+            for (int i = 1; i < buffer.getNumSamples(); ++i)
+                worst = juce::jmax (worst, std::abs (data[i] - data[i - 1]));
+        }
+
+        return worst;
+    };
+
+    CabConvolutionEngine engine;
+    engine.setMixProportion (1.0f);
+    engine.setLevelDb (0.0f);
+    engine.setBlendProportion (1.0f);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = testSampleRate;
+    spec.maximumBlockSize = static_cast<juce::uint32> (blockSize);
+    spec.numChannels = 2;
+
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> irB (1, irLength);
+    for (int i = 0; i < irLength; ++i)
+        irB.setSample (0, i, 0.8f * std::pow (0.995f, static_cast<float> (i)));
+
+    engine.setImpulseResponseB (std::move (irB), testSampleRate);
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    int sampleOffset = 0;
+
+    // Continuous sine across blocks, so a genuine discontinuity in the
+    // processed output cannot be confused with one in the source.
+    const auto processBlock = [&]
+    {
+        TestHelpers::fillWithSine (buffer, testSampleRate, testFrequencyHz, 0.5f, sampleOffset);
+        sampleOffset += blockSize;
+
+        juce::dsp::AudioBlock<float> block (buffer);
+        engine.process (block);
+    };
+
+    // Settled, fully engaged reference passage.
+    for (int i = 0; i < rampBlocks * 2; ++i)
+        processBlock();
+
+    float engagedStep = 0.0f;
+
+    for (int i = 0; i < rampBlocks; ++i)
+    {
+        processBlock();
+        engagedStep = juce::jmax (engagedStep, maximumStep (buffer));
+    }
+
+    // Disengage, let the ramp finish, then re-engage a couple of blocks
+    // later - i.e. while the silent flush armed by the disengagement is
+    // still counting down.
+    engine.setBlendProportion (0.0f);
+
+    for (int i = 0; i < rampBlocks; ++i)
+        processBlock();
+
+    // Settled, fully disengaged reference: the other endpoint of the
+    // crossfade, and the faster-stepping of the two.
+    float disengagedStep = 0.0f;
+
+    for (int i = 0; i < 2; ++i)
+    {
+        processBlock();
+        disengagedStep = juce::jmax (disengagedStep, maximumStep (buffer));
+    }
+
+    // Re-engage while the flush armed by the disengagement above is still
+    // counting down.
+    engine.setBlendProportion (1.0f);
+
+    float reengagementStep = 0.0f;
+
+    for (int i = 0; i < rampBlocks; ++i)
+    {
+        processBlock();
+        CHECK (TestHelpers::allSamplesFinite (buffer));
+        reengagementStep = juce::jmax (reengagementStep, maximumStep (buffer));
+    }
+
+    const auto steadyStateStep = juce::jmax (engagedStep, disengagedStep);
+
+    INFO ("engaged step " << engagedStep
+          << ", disengaged step " << disengagedStep
+          << ", re-engagement step " << reengagementStep);
+    CHECK (reengagementStep < steadyStateStep * 1.1f);
 }
 
 TEST_CASE ("Reloading IR A after IR B re-aligns IR B against the new reference, not the stale one",

@@ -122,7 +122,12 @@ void CabConvolutionEngine::prepare (const juce::dsp::ProcessSpec& spec)
 
     // Per juce::dsp::Convolution's documented contract: loadImpulseResponse()
     // must be called *before* prepare() for that IR to be guaranteed active
-    // during the very first process() call.
+    // during the very first process() call. Loads are normally handed to the
+    // audio thread (see the StagedIrLoad rationale in the header), so drain
+    // anything staged here first - prepare() is the one place where doing it
+    // on this thread is provably safe, since process() cannot be running.
+    applyStagedIrLoadsNow();
+
     convolution.prepare (spec);
     convolutionB.prepare (spec);
 
@@ -242,11 +247,50 @@ void CabConvolutionEngine::prepare (const juce::dsp::ProcessSpec& spec)
     loCutEngagedPreviously = lastLoCutHz > loCutMinHz + bypassEpsilonHz;
     hiCutEngagedPreviously = lastHiCutHz < hiCutMaxHz - bypassEpsilonHz;
     distanceEngagedPreviously = lastDistancePercent > distanceMinPercent + distanceBypassEpsilonPercent;
-    blendEngagedPreviously = lastBlendProportion > blendBypassEpsilon;
+
+    // Depends on latencySamples and scratchBuffer's size, both established
+    // above. irBBranchActivePreviously is deliberately left at the false
+    // reset() set: nothing needs flushing straight after a prepare().
+    updateIrBFlushLength();
+}
+
+void CabConvolutionEngine::updateIrBFlushLength()
+{
+    // convolutionB is an FIR of irBLengthSeconds' duration once resampled to
+    // the current rate, so pushing that many zero samples through it is
+    // exactly what makes its subsequent output independent of everything
+    // fed before. The margin covers the convolver's own reported latency
+    // plus one maximum-size block, so the countdown can never run out one
+    // partial block ahead of the tail it is chasing; the default delta IR
+    // (irBLengthSeconds == 0) is covered by the margin alone.
+    const auto irSamples = irBLengthSeconds > 0.0
+                                ? static_cast<int> (std::ceil (irBLengthSeconds * sampleRate))
+                                : 0;
+
+    const auto margin = latencySamples + juce::jmax (1, scratchBuffer.getNumSamples());
+
+    irBFlushLengthSamples.store (irSamples + margin, std::memory_order_relaxed);
 }
 
 void CabConvolutionEngine::reset()
 {
+    // Serialised with the message-thread-only group, for the same reason and
+    // by the same argument as #34's process() change: juce::dsp::Convolution
+    // ::reset() is a message-queue PRODUCER in JUCE 8.0.14 (Impl::reset() ->
+    // destroyPreviousEngine() -> BackgroundMessageQueue::push(), "only safe
+    // to call from a single thread at a time"), so it must never run
+    // concurrently with a loadImpulseResponse() on another thread.
+    //
+    // This does NOT put a lock on the audio thread. AudioProcessor::reset()
+    // is a host CONTROL callback in the same family as prepareToPlay(), not
+    // a realtime one, and JUCE's own wrappers demonstrate that: the VST3
+    // wrapper calls it from setProcessing(false), and the AU wrapper's
+    // Reset() calls prepareToPlay() - which allocates - right before it
+    // (juce_audio_plugin_client_VST3.cpp, juce_audio_plugin_client_AU_1.mm).
+    // prepare() re-enters this method under the same recursive mutex it
+    // already holds.
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     convolution.reset();
     convolutionB.reset();
     morphEngine.reset();
@@ -262,6 +306,12 @@ void CabConvolutionEngine::reset()
     distanceAirDelay.reset();
 
     samplesSinceCoefficientUpdate = 0;
+
+    // convolutionB.reset() above has already cleared what a flush exists to
+    // flush, so any armed countdown is moot. Note that this method is NOT
+    // reachable from process(); see the header's threading contract.
+    irBFlushSamplesRemaining = 0;
+    irBBranchActivePreviously = false;
 }
 
 void CabConvolutionEngine::setLoCutHz (float newFrequencyHz)
@@ -469,7 +519,7 @@ juce::AudioBuffer<float> CabConvolutionEngine::prepareSlotForLoading (const juce
     return processed;
 }
 
-void CabConvolutionEngine::loadIntoConvolver (juce::dsp::Convolution& convolver,
+void CabConvolutionEngine::loadIntoConvolver (StagedIrLoad& destination,
                                                juce::AudioBuffer<float> buffer,
                                                double bufferSampleRate)
 {
@@ -485,11 +535,73 @@ void CabConvolutionEngine::loadIntoConvolver (juce::dsp::Convolution& convolver,
                                 ? juce::dsp::Convolution::Normalise::no
                                 : juce::dsp::Convolution::Normalise::yes;
 
-    convolver.loadImpulseResponse (std::move (buffer),
-                                    bufferSampleRate,
-                                    isStereo,
-                                    juce::dsp::Convolution::Trim::no,
-                                    normalise);
+    stageIrLoad (destination, std::move (buffer), bufferSampleRate, isStereo, normalise);
+}
+
+void CabConvolutionEngine::stageIrLoad (StagedIrLoad& destination,
+                                         juce::AudioBuffer<float> buffer,
+                                         double bufferSampleRate,
+                                         juce::dsp::Convolution::Stereo stereo,
+                                         juce::dsp::Convolution::Normalise normalise)
+{
+    // The lock is held for a move and four scalar stores - no allocation, no
+    // analysis - so the audio thread's try-lock below effectively never
+    // fails, and when it does the load simply lands one block later. See the
+    // hand-off rationale in the header (#34).
+    const juce::SpinLock::ScopedLockType lock (stagedIrLoadLock);
+
+    destination.buffer = std::move (buffer);
+    destination.bufferSampleRate = bufferSampleRate;
+    destination.stereo = stereo;
+    destination.normalise = normalise;
+    destination.pending = true;
+}
+
+void CabConvolutionEngine::applyStagedIrLoadsLocked() noexcept
+{
+    // Caller must hold stagedIrLoadLock.
+    const auto apply = [] (juce::dsp::Convolution& convolver, StagedIrLoad& staged)
+    {
+        if (! staged.pending)
+            return;
+
+        convolver.loadImpulseResponse (std::move (staged.buffer),
+                                        staged.bufferSampleRate,
+                                        staged.stereo,
+                                        juce::dsp::Convolution::Trim::no,
+                                        staged.normalise);
+        staged.pending = false;
+    };
+
+    apply (convolution, stagedIrLoadA);
+    apply (convolutionB, stagedIrLoadB);
+}
+
+void CabConvolutionEngine::applyStagedIrLoadsNow()
+{
+    // prepare() only. juce::dsp::Convolution requires an IR to have been
+    // loaded before prepare() for it to be active during the first
+    // process() call, and prepare() is by contract never concurrent with
+    // process() - so performing the staged load directly here is both
+    // necessary and safe.
+    const juce::SpinLock::ScopedLockType lock (stagedIrLoadLock);
+
+    applyStagedIrLoadsLocked();
+}
+
+void CabConvolutionEngine::applyStagedIrLoads() noexcept
+{
+    // Audio thread. ScopedTryLockType never blocks: a contended block just
+    // defers the load. loadImpulseResponse() is documented wait-free and
+    // "suitable for use in a realtime context" (juce_Convolution.h, JUCE
+    // 8.0.14) - it moves the buffer into a FixedSizeFunction with inline
+    // storage and pushes it, with no heap traffic on this thread.
+    const juce::SpinLock::ScopedTryLockType lock (stagedIrLoadLock);
+
+    if (! lock.isLocked())
+        return;
+
+    applyStagedIrLoadsLocked();
 }
 
 void CabConvolutionEngine::applySlot (int slotIndex)
@@ -523,7 +635,7 @@ void CabConvolutionEngine::applySlotA()
 
     morphEngine.setImpulseResponse (0, processed);
 
-    loadIntoConvolver (convolution, std::move (processed), lastIrARawSampleRate);
+    loadIntoConvolver (stagedIrLoadA, std::move (processed), lastIrARawSampleRate);
 
     anyImpulseResponseLoaded = true;
 }
@@ -553,9 +665,11 @@ void CabConvolutionEngine::applySlotB()
                             ? static_cast<double> (aligned.getNumSamples()) / lastIrBRawSampleRate
                             : 0.0;
 
+    updateIrBFlushLength();
+
     morphEngine.setImpulseResponse (1, aligned);
 
-    loadIntoConvolver (convolutionB, std::move (aligned), lastIrBRawSampleRate);
+    loadIntoConvolver (stagedIrLoadB, std::move (aligned), lastIrBRawSampleRate);
 
     anyImpulseResponseBLoaded = true;
 }
@@ -604,11 +718,11 @@ void CabConvolutionEngine::loadDefaultImpulseResponse()
     // break the passthrough guarantee the default IR exists to provide. This
     // holds in Loudness mode too - the delta is the identity, not content to
     // be level-matched.
-    convolution.loadImpulseResponse (makeDeltaImpulseResponse(),
-                                      sampleRate,
-                                      juce::dsp::Convolution::Stereo::no,
-                                      juce::dsp::Convolution::Trim::no,
-                                      juce::dsp::Convolution::Normalise::no);
+    stageIrLoad (stagedIrLoadA,
+                  makeDeltaImpulseResponse(),
+                  sampleRate,
+                  juce::dsp::Convolution::Stereo::no,
+                  juce::dsp::Convolution::Normalise::no);
 
     {
         juce::AudioBuffer<float> delta (1, 1);
@@ -648,12 +762,13 @@ void CabConvolutionEngine::loadDefaultImpulseResponseB()
 
     hasUserIrB = false;
     irBLengthSeconds = 0.0;
+    updateIrBFlushLength();
 
-    convolutionB.loadImpulseResponse (makeDeltaImpulseResponse(),
-                                       sampleRate,
-                                       juce::dsp::Convolution::Stereo::no,
-                                       juce::dsp::Convolution::Trim::no,
-                                       juce::dsp::Convolution::Normalise::no);
+    stageIrLoad (stagedIrLoadB,
+                  makeDeltaImpulseResponse(),
+                  sampleRate,
+                  juce::dsp::Convolution::Stereo::no,
+                  juce::dsp::Convolution::Normalise::no);
 
     {
         juce::AudioBuffer<float> delta (1, 1);
@@ -799,6 +914,12 @@ void CabConvolutionEngine::process (juce::dsp::AudioBlock<float>& block)
     const auto numSamplesInt = static_cast<int> (numSamples);
     const auto numChannels = block.getNumChannels();
 
+    // Pick up anything the message thread has prepared for a convolver. This
+    // thread is the only one allowed to call into a live juce::dsp::
+    // Convolution - see the StagedIrLoad hand-off rationale in the header
+    // (#34).
+    applyStagedIrLoads();
+
     // Mono-in/stereo-out: fill the second channel from the first at the very
     // top, so a mono DI drives the whole chain in stereo rather than playing
     // out of one side (survey gap #10).
@@ -867,24 +988,36 @@ void CabConvolutionEngine::process (juce::dsp::AudioBlock<float>& block)
         distanceHighShelfFilter.reset();
     }
 
-    // Same idea for convolutionB: it keeps no history of its own bypass
-    // state, so without this it's the one exception in this function that
-    // never gets reset on a disengaged->engaged transition (see #12).
-    // convolutionB.process() is skipped entirely for every block Blend is
-    // disengaged (below), which freezes its internal overlap-add buffer
-    // rather than decaying it - left unreset, that stale, time-decoupled
-    // tail would be added back into the output the moment Blend re-engages.
-    // juce::dsp::Convolution::reset() is documented noexcept/real-time safe
-    // (JUCE 8.0.14 juce_Convolution.h) and this engine already calls it from
-    // the audio thread via CabConvolutionEngine::reset(), so this is safe
-    // here too.
-    if (blendEngaged && ! blendEngagedPreviously)
-        convolutionB.reset();
+    // convolutionB keeps no history of its own bypass state, and its
+    // process() is skipped entirely for every block the IR B branch is
+    // inactive (below) - which freezes its internal overlap-add buffer
+    // rather than decaying it. Left frozen, that stale, time-decoupled tail
+    // gets added back into the output the moment the branch runs again
+    // (#12).
+    //
+    // It must NOT be cleared with convolutionB.reset() from here, however
+    // tempting the symmetry with the filters above: in JUCE 8.0.14
+    // Convolution::reset() is a message-queue *producer*
+    // (Impl::reset() -> destroyPreviousEngine() ->
+    // BackgroundMessageQueue::push(), "only safe to call from a single
+    // thread at a time"), and the message thread produces into that same
+    // queue from every slot-B loader path. Two producers on a
+    // single-producer AbstractFifo is what aborted hosts in #34. See the
+    // silent-flush comment on irBBranchActivePreviously in the header for
+    // the full rationale.
+    //
+    // So instead: arm a silent flush when the branch goes inactive, and run
+    // it below. process() is the only Convolution method reachable from this
+    // thread.
+    const bool irBBranchActive = stockPathActive && blendEngaged;
+
+    if (! irBBranchActive && irBBranchActivePreviously)
+        irBFlushSamplesRemaining = irBFlushLengthSamples.load (std::memory_order_relaxed);
 
     loCutEngagedPreviously = ! loCutBypassed;
     hiCutEngagedPreviously = ! hiCutBypassed;
-    blendEngagedPreviously = blendEngaged;
     distanceEngagedPreviously = ! distanceBypassed;
+    irBBranchActivePreviously = irBBranchActive;
 
     dryWetMixer.setWetMixProportion (wetMix);
 
@@ -896,6 +1029,24 @@ void CabConvolutionEngine::process (juce::dsp::AudioBlock<float>& block)
 
     //==========================================================================
     // Convolution stage.
+
+    // Silent flush of convolutionB (see above). Runs only while the IR B
+    // branch is inactive, so it can never contend with the branch's own use
+    // of scratchBuffer below, and only while a flush is armed, so a session
+    // that never touches Blend pays nothing at all. scratchLargeEnough is
+    // re-checked because blendEngaged folds it in but stockPathActive does
+    // not.
+    if (! irBBranchActive && irBFlushSamplesRemaining > 0 && scratchLargeEnough)
+    {
+        juce::dsp::AudioBlock<float> flushBlock (scratchBuffer);
+        auto flushSub = flushBlock.getSubBlock (0, numSamples);
+        flushSub.clear();
+
+        juce::dsp::ProcessContextReplacing<float> flushContext (flushSub);
+        convolutionB.process (flushContext);
+
+        irBFlushSamplesRemaining = juce::jmax (0, irBFlushSamplesRemaining - numSamplesInt);
+    }
 
     const bool needMorphScratch = morphPathActive && stockPathActive;
 
