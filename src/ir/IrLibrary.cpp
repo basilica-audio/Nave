@@ -33,10 +33,19 @@ namespace basilica::ir::IrLibrary
             if (shouldAbort != nullptr && shouldAbort())
                 return {}; // aborted scans yield nothing, never a partial listing
 
-            if (entry.isHidden())
-                continue;
-
             const auto file = entry.getFile();
+
+            // Two hidden checks, deliberately: entry.isHidden() honours the
+            // platform's own convention (the hidden attribute on Windows,
+            // leading dot on POSIX - JUCE 8.0.14 juce_File), but leading-dot
+            // names are additionally skipped on EVERY platform. Windows does
+            // NOT consider dotfiles hidden, yet IR libraries copied from a
+            // Mac routinely carry AppleDouble "._cab.wav" sidecar files
+            // (resource-fork metadata, not audio) that would otherwise show
+            // up as phantom library entries there - caught by exactly this
+            // cross-platform divergence failing the scan test on Windows CI.
+            if (entry.isHidden() || file.getFileName().startsWith ("."))
+                continue;
 
             if (! isImpulseResponseFile (file))
                 continue;

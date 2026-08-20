@@ -67,7 +67,12 @@ TEST_CASE ("scan finds IR files recursively, filters non-IRs and hidden files, a
     const auto aiff = dir.makeFile ("subB/three.aiff");
     const auto aif = dir.makeFile ("four.aif");
     dir.makeFile ("notes.txt");        // wrong type - excluded
-    dir.makeFile (".hidden.wav");      // hidden - excluded
+    dir.makeFile (".hidden.wav");      // dot-prefixed - excluded on EVERY
+                                       // platform (on Windows a dotfile is
+                                       // NOT natively hidden; the scan
+                                       // skips it explicitly - see
+                                       // IrLibrary.cpp's AppleDouble note)
+    dir.makeFile ("subA/._two.WAV");   // macOS AppleDouble sidecar - excluded
 
     const auto results = scan (dir.root);
 
