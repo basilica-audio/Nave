@@ -7,6 +7,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_dsp/juce_dsp.h>
 
+#include <atomic>
 #include <mutex>
 
 // The complete Nave signal path, independent of juce::AudioProcessor so it
@@ -77,11 +78,12 @@
 //
 //   * Message-thread only: the four that change what is actually IN a
 //     convolver - align mode, IR gain mode, and the two per-slot minimum-phase
-//     switches - plus prepare()/setImpulseResponse()/loadDefaultImpulseResponse()
-//     and their slot-B counterparts. Each re-runs FFT-scale analysis and
-//     reloads the stock convolution engines, which is neither cheap nor
-//     real-time safe. NaveAudioProcessor routes parameter-driven changes
-//     through an AsyncUpdater rather than calling them from processBlock().
+//     switches - plus prepare()/reset()/setImpulseResponse()/
+//     loadDefaultImpulseResponse() and their slot-B counterparts. Each re-runs
+//     FFT-scale analysis and reloads the stock convolution engines, which is
+//     neither cheap nor real-time safe. NaveAudioProcessor routes
+//     parameter-driven changes through an AsyncUpdater rather than calling
+//     them from processBlock().
 //
 //     "Message-thread only" describes the REQUIRED caller, not an ENFORCED
 //     one: prepareToPlay() (and therefore this group, since it calls
@@ -100,6 +102,30 @@
 //     *different* non-audio threads legitimately can, and
 //     juce::dsp::Convolution::loadImpulseResponse()'s background hand-off is
 //     documented safe only "from a single thread at a time".
+//
+//     The binding rule underneath both groups (#34): while audio is running,
+//     the AUDIO THREAD is the only thread that touches a live
+//     juce::dsp::Convolution, and it calls exactly two of its methods -
+//     process() and loadImpulseResponse(), the latter on buffers the message
+//     thread has staged for it (see StagedIrLoad below). JUCE 8.0.14's
+//     juce_Convolution.h states the contract as "It is not safe to interleave
+//     calls to the methods of this class. If you need to load new impulse
+//     responses during processing the load() calls must be synchronised with
+//     process() calls, which in practice means making the load() call from
+//     the audio thread" - and every method other than those two is, or can
+//     become, a producer on a single-producer background queue that
+//     processSamples() also produces into. The audio thread cannot take
+//     messageThreadMutex to serialise itself without violating real-time
+//     discipline, so the ownership goes the other way: the message thread
+//     does all the expensive, allocating preparation and hands the result
+//     over, and where the audio thread needs a convolver's state cleared it
+//     flushes it with silence rather than calling reset() (see
+//     irBBranchActivePreviously below).
+//
+//     The two methods that remain message-thread-side, prepare() and
+//     reset(), are host CONTROL callbacks (prepareToPlay, setProcessing/
+//     Reset) which the host does not overlap with processBlock(); both are
+//     additionally serialised behind messageThreadMutex.
 //
 // CLICK POLICY (binding, v0.3.0). juce::dsp::Convolution has no crossfade
 // hook: loadImpulseResponse() resets the engine, which is audible. Making the
@@ -181,7 +207,14 @@ public:
     void prepare (const juce::dsp::ProcessSpec& spec);
 
     // Clears all filter/convolution/delay-line state without deallocating.
-    // Safe to call from the audio thread (e.g. on playback stop/loop).
+    //
+    // MESSAGE-THREAD ONLY (see the THREADING note above), despite the name
+    // and despite not allocating. It calls juce::dsp::Convolution::reset(),
+    // which in JUCE 8.0.14 is a background-message-queue producer, so it
+    // belongs to the group serialised by messageThreadMutex - see #34 and
+    // the implementation comment. NaveAudioProcessor::reset() (the only
+    // caller) is an AudioProcessor host callback in the same family as
+    // prepareToPlay(), which is exactly what that group is for.
     void reset();
 
     // Processes `block` in place. `block` must have at most the maximum
@@ -454,6 +487,55 @@ private:
     double sampleRate = 44100.0;
     int numChannelsPrepared = 2;
 
+    //==========================================================================
+    // Message-thread -> audio-thread impulse-response hand-off (#34).
+    //
+    // juce_Convolution.h (JUCE 8.0.14) states the contract plainly:
+    //
+    //     Threading: It is not safe to interleave calls to the methods of
+    //     this class. If you need to load new impulse responses during
+    //     processing the load() calls must be synchronised with process()
+    //     calls, which in practice means making the load() call from the
+    //     audio thread. The loadImpulseResponse() functions *are* wait-free
+    //     and are therefore suitable for use in a realtime context.
+    //
+    // The reason is visible in juce_Convolution.cpp: both
+    // Convolution::processSamples() and loadImpulseResponse() end up in
+    // ConvolutionEngineQueue::postPendingCommand(), which reads and clears
+    // the shared `pendingCommand` slot and pushes it onto a single-producer
+    // AbstractFifo. Calling load() from the message thread while the audio
+    // thread processes therefore leaves a window - between `pendingCommand`
+    // being written and being pushed - in which both threads push, a queue
+    // slot is published before it is written, and JUCE's convolution loader
+    // thread invokes an empty FixedSizeFunction. That is the same failure
+    // mode as #34's audio-thread reset(), just a narrower window; it was
+    // still reproducible under tests/AudioThreadConvolutionResetTests.cpp
+    // once the reset() half was fixed.
+    //
+    // So the engine follows JUCE's own advice: the message thread prepares
+    // the buffer (resampling, min-phase, alignment, loudness - all the
+    // expensive, allocating work) and merely STAGES it here; process()
+    // performs the actual wait-free loadImpulseResponse(). The audio thread
+    // is then the only thread that ever touches a live convolver, which is
+    // exactly the "synchronised with process()" the contract asks for.
+    //
+    // The hand-off itself is a juce::SpinLock taken with ScopedTryLockType on
+    // the audio thread: it never blocks there (a failed try just defers the
+    // load by one block), and the message thread holds it only for a buffer
+    // move plus a few scalars.
+    struct StagedIrLoad
+    {
+        juce::AudioBuffer<float> buffer;
+        double bufferSampleRate = 44100.0;
+        juce::dsp::Convolution::Stereo stereo = juce::dsp::Convolution::Stereo::no;
+        juce::dsp::Convolution::Normalise normalise = juce::dsp::Convolution::Normalise::yes;
+        bool pending = false;
+    };
+
+    juce::SpinLock stagedIrLoadLock;
+    StagedIrLoad stagedIrLoadA;
+    StagedIrLoad stagedIrLoadB;
+
     // Internal helpers. All of these are message-thread only.
     void applySlot (int slotIndex);
     void applySlotA();
@@ -461,11 +543,29 @@ private:
     juce::AudioBuffer<float> prepareSlotForLoading (const juce::AudioBuffer<float>& raw,
                                                      double rawSampleRate,
                                                      bool applyMinPhase) const;
-    void loadIntoConvolver (juce::dsp::Convolution& convolver,
+    void loadIntoConvolver (StagedIrLoad& destination,
                              juce::AudioBuffer<float> buffer,
                              double bufferSampleRate);
+    void stageIrLoad (StagedIrLoad& destination,
+                       juce::AudioBuffer<float> buffer,
+                       double bufferSampleRate,
+                       juce::dsp::Convolution::Stereo stereo,
+                       juce::dsp::Convolution::Normalise normalise);
+    // Performs any staged load immediately, on the calling (message) thread.
+    // Only legal where process() provably cannot be running concurrently -
+    // i.e. prepare(), which juce::dsp::Convolution requires the IR to be
+    // loaded before anyway.
+    void applyStagedIrLoadsNow();
+    // Shared body of the two drain paths above/below. Caller must hold
+    // stagedIrLoadLock.
+    void applyStagedIrLoadsLocked() noexcept;
+    // Recomputes irBFlushLengthSamples from the currently loaded IR B and
+    // sample rate. Message-thread only (it is called from prepare() and from
+    // every slot-B load path); process() only ever reads the result.
+    void updateIrBFlushLength();
 
     // Audio-thread helpers.
+    void applyStagedIrLoads() noexcept;
     void updateCutCoefficients (bool loCutBypassed, bool hiCutBypassed, float loCutHz, float hiCutHz) noexcept;
     void updateDistanceCoefficients (float distancePercent) noexcept;
     void processCutFilter (CutFilterChain& chain,
@@ -547,19 +647,66 @@ private:
     bool anyImpulseResponseBLoaded = false;
 
     // Previous block's engaged (i.e. not bypassed) state for LoCut/HiCut/
-    // Distance/Blend, used to detect bypassed->engaged transitions so the
-    // filter(s)/convolution engine can be reset to a clean state exactly
-    // then (see process()). Blend's counterpart is convolutionB: unlike
-    // LoCut/HiCut/Distance's IIR filters, convolutionB is a stateful
-    // juce::dsp::Convolution whose internal overlap-add buffer keeps
-    // accumulating output for future blocks even after the engine stops
-    // calling its process() (see the Blend disengaged-branch below) - left
-    // unreset, that stale, time-decoupled tail gets added back into the
-    // output on re-engagement (see #12).
+    // Distance, used to detect bypassed->engaged transitions so the filters'
+    // IIR state can be cleared to a clean start exactly then (see process()).
     bool loCutEngagedPreviously = false;
     bool hiCutEngagedPreviously = false;
     bool distanceEngagedPreviously = false;
-    bool blendEngagedPreviously = false;
+
+    //==========================================================================
+    // convolutionB's silent flush (#34, and the guarantee #12 needs).
+    //
+    // Unlike LoCut/HiCut/Distance's IIR filters, convolutionB is a stateful
+    // juce::dsp::Convolution whose internal overlap-add buffer keeps holding
+    // output destined for future blocks even after the engine stops calling
+    // its process() (which it does for every block the IR B branch is
+    // inactive - see process()). Left untouched, that stale, time-decoupled
+    // tail gets added back into the output the moment the branch runs again:
+    // #12.
+    //
+    // #18 solved that by calling convolutionB.reset() from process() on the
+    // inactive->active transition. That is a real-time-safety defect, not
+    // merely an unusual choice: in JUCE 8.0.14, Convolution::reset() ->
+    // Impl::reset() -> destroyPreviousEngine() ->
+    // BackgroundMessageQueue::push(), and push() is documented "only safe to
+    // call from a single thread at a time" (it wraps an AbstractFifo, i.e. a
+    // single-producer queue), while juce_Convolution.h's class docs go
+    // further: "It is not safe to interleave calls to the methods of this
+    // class." The message thread pushes into that same per-instance queue
+    // from every slot-B loader path, so an IR B load landing at the same
+    // moment as a Blend re-engagement gave two concurrent producers on a
+    // single-producer FIFO - a slot published before it was written, popped
+    // and invoked as a default-constructed FixedSizeFunction by JUCE's
+    // convolution loader thread, aborting the host. #27's messageThreadMutex
+    // cannot cover this: the audio thread must never take it.
+    //
+    // Instead, the engine keeps convolutionB running on a SILENCED input for
+    // irBFlushLengthSamples after the branch goes inactive. A convolver is a
+    // finite-memory LTI system, so once its impulse response's worth of zero
+    // samples has been pushed through it, its output cannot contain any
+    // contribution from pre-disengagement input - exactly the guarantee
+    // reset() was there for, obtained with process() as the only Convolution
+    // method the audio thread ever calls.
+    //
+    // The cost is bounded by construction: at most one extra convolution per
+    // block, for at most one IR length after a disengagement - i.e. never
+    // more than what Blend > 0 already costs, and exactly zero in the
+    // default Blend-0% steady state. Re-engaging inside the flush window is
+    // better than a reset was, too: the residual tail is then the genuine,
+    // continuously decaying continuation of audio from less than one IR
+    // length ago, so there is no discontinuity to click on.
+    bool irBBranchActivePreviously = false;
+
+    // Audio-thread-only countdown, in samples.
+    int irBFlushSamplesRemaining = 0;
+
+    // How long a flush must run, recomputed off the audio thread by
+    // updateIrBFlushLength() whenever slot B or the sample rate changes, and
+    // read (never written) by process(). Atomic because those are different
+    // threads; relaxed ordering is enough, since a stale-by-one-load value
+    // only ever means flushing against the previous IR's length, and a newly
+    // loaded engine starts from zero state anyway.
+    std::atomic<int> irBFlushLengthSamples { 0 };
 
     // IR A's most recently loaded onset sample/rate, recorded by
     // setImpulseResponse()/loadDefaultImpulseResponse() and used as the
