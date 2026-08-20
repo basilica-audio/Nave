@@ -6,6 +6,7 @@
 
 #include "gui/BasilicaLookAndFeel.h"
 #include "gui/FilmstripKnob.h"
+#include "gui/IrBrowserPanel.h"
 #include "presets/PresetBar.h"
 
 class NaveAudioProcessor;
@@ -56,8 +57,10 @@ private:
     };
 
     // One IR loader "slot": a read-only name label showing the currently
-    // loaded file (or "Default"), a "Load IR..." button that opens a
-    // FileChooser, and a "Default" button that reverts to the built-in
+    // loaded file (or "Default"), a "Browse..." button that opens the IR
+    // browser overlay (src/gui/IrBrowserPanel.h) targeting this slot, a
+    // "Load IR..." button that opens a FileChooser for picking one known
+    // file directly, and a "Default" button that reverts to the built-in
     // unit-impulse IR. Styled entirely via BasilicaLookAndFeel's default
     // juce::TextButton/juce::Label drawing (JUCE 8.0.14's LookAndFeel_V4
     // dark colour scheme, which BasilicaLookAndFeel inherits unmodified -
@@ -70,6 +73,7 @@ private:
     struct IrSlot
     {
         juce::Label nameLabel;
+        juce::TextButton browseButton;
         juce::TextButton loadButton;
         juce::TextButton defaultButton;
         std::unique_ptr<juce::FileChooser> activeFileChooser;
@@ -79,6 +83,8 @@ private:
     void configureIrSlot (IrSlot& slot, IrSlotId id, const juce::String& slotLabel);
     void refreshIrSlotLabel (IrSlot& slot, IrSlotId id, const juce::String& slotLabel);
     void chooseImpulseResponseForSlot (IrSlot& slot, IrSlotId id, const juce::String& slotLabel);
+    void openIrBrowserForSlot (IrSlotId id, const juce::String& slotLabel);
+    IrSlot& slotFor (IrSlotId id) noexcept;
     void applyScaleStep (int newStepIndex);
     void cycleScale();
 
@@ -98,6 +104,14 @@ private:
 
     IrSlot irSlotA;
     IrSlot irSlotB;
+
+    // The IR browser overlay (issue #1). One shared instance for both
+    // slots, retargeted per open; ADDED last in the constructor body
+    // (addChildComponent order, not declaration order, is what sets
+    // z-order) so it covers every other child when visible.
+    basilica::gui::IrBrowserPanel irBrowserPanel;
+    IrSlotId irBrowserTargetSlot = IrSlotId::A;
+    juce::String irBrowserTargetLabel { "IR A" };
 
     juce::Label titleLabel;
 
