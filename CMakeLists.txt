@@ -161,6 +161,11 @@ target_link_libraries(Tests PRIVATE SharedCode Catch2::Catch2)
 target_compile_definitions(Tests PRIVATE
     $<TARGET_PROPERTY:Nave,COMPILE_DEFINITIONS>
     JUCE_MODAL_LOOPS_PERMITTED=1
+    # The bundled factory IR library (issue #33) is shipped as files installed
+    # into the user's IR library folder, not as BinaryData, because the browser
+    # is a directory scanner - so tests/FactoryIrLibraryTests.cpp reads the
+    # assets from the source tree, the same bytes the release archive stages.
+    NAVE_IR_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/resources/irs"
 )
 
 set_target_properties(Tests PROPERTIES XCODE_GENERATE_SCHEME ON)

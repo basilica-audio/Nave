@@ -42,6 +42,47 @@ Nave has **two independent IR slots**, A and B:
 - **IR A** — the primary/original slot. Use the **Load IR...** button to pick a `.wav`/`.aiff` cabinet IR file; **Default** clears it back to the built-in transparent delta IR.
 - **IR B** — a secondary slot, loaded and cleared the same way via **Load IR B...** / **Default**. On its own it does nothing (see [IR Blend](#ir-blend) below) — it only matters once you dial in some Blend.
 
+### The bundled library
+
+Nave ships **nine impulse responses** in the release archive, in a folder called
+`Impulse Responses`. Copy that folder to `Music/Nave/` under your user folder
+(`~/Music/Nave/Impulse Responses` on macOS, `%USERPROFILE%\Music\Nave\Impulse Responses`
+on Windows) and the IR browser finds them without being pointed anywhere.
+
+**They are models, not recordings.** Every one is computed from an analytical
+cabinet model — driver and box alignment, cone-breakup modes, voice-coil
+roll-off, baffle and floor reflections, microphone proximity and directivity —
+by a generator committed in this repository. None of them is a capture of a real
+cabinet, speaker or microphone, and none is named after one. That is why every
+filename starts with `modelled_`, and it is the reason the set could ship at
+all: a generated IR has no licensing question attached to it, where a capture
+carries rights from the cabinet, the microphone and whoever pressed record.
+
+They are dedicated to the public domain under CC0 1.0 Universal. Use them for
+anything, including commercially, with no attribution.
+
+| | |
+|---|---|
+| `modelled_4x12_ceramic_cone` | Sealed 4x12, ceramic 12" voicing, dynamic on the dust cap. The default heavy-rhythm cabinet. |
+| `modelled_4x12_ceramic_edge` | The same cabinet with the mic at the cone edge — darker, less fizz. |
+| `modelled_4x12_ceramic_room` | The same cabinet at one metre, with early reflections and a short tail. |
+| `modelled_2x12_alnico_cone` | Open-back 2x12, alnico voicing: earlier breakup, thinner low end. |
+| `modelled_1x12_combo_cone` | Small open-back combo: honky, small-box resonance. |
+| `modelled_8x10_cone` | Sealed 8x10 bass stack, dynamic on the dust cap. |
+| `modelled_8x10_edge` | The same stack, mic at the cone edge. |
+| `modelled_1x15_vintage` | Ported 1x15 through a ribbon — the dark one. |
+| `modelled_4x10_horn` | Ported 4x10 with an HF horn — the bright one, for clank and grind. |
+
+The three cone/edge pairs are built to be blended against each other: load the
+cone into IR A, the edge into IR B, and use **IR Blend** to dial the top end
+between them. [IR Align](#ir-align) handles the timing so the blend does not
+comb.
+
+Full provenance, the model parameters behind each file, checksums and the
+measured response of every one are in `resources/irs/LICENSES.md` in the
+repository. To regenerate them, or to voice your own, see
+`tools/ir-synth/cabsynth.py`.
+
 ### The IR browser
 
 Each slot also has a **Browse...** button that opens the **IR browser**: an overlay listing every `.wav`/`.aiff` file found (recursively) under your IR library folder, so you can audition across a whole library instead of round-tripping through a file dialog per IR.
@@ -49,7 +90,7 @@ Each slot also has a **Browse...** button that opens the **IR browser**: an over
 - **Selecting a row loads it into the slot immediately** — click through the list, or focus it and step with the arrow keys, and you are auditioning cabs in real time. Note that (as with any IR load outside Morph) each swap is a hard engine reload, so audition while the track is looping quietly, not mid-take.
 - **Return or double-click** loads the selected IR and closes the browser; **Escape** or **Close** just closes it (the last auditioned IR stays loaded).
 - The **filter box** narrows the list by name (case-insensitive substring, matched against the path relative to the library folder).
-- **Folder...** points the browser at your own IR library directory. The choice is saved with the plugin state. Out of the box it looks in `Music/Nave/Impulse Responses` under your user folder.
+- **Folder...** points the browser at your own IR library directory. The choice is saved with the plugin state. Out of the box it looks in `Music/Nave/Impulse Responses` under your user folder — which is where [the bundled library](#the-bundled-library) is meant to go.
 - The folder scan runs in the background (a huge library or a network drive never freezes the UI) and is capped at 2000 files.
 
 The browser and the per-slot **Load IR...** file dialog load through exactly the same path — use whichever fits the moment.
