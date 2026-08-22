@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added (headline: a bundled IR library, generated rather than sourced)
+
+- **Nine bundled cabinet impulse responses** (`resources/irs/`, issue #33) — five guitar (`4x12 Ceramic Cone`, `4x12 Ceramic Edge`, `4x12 Room 1m`, `2x12 Alnico Cone`, `1x12 Combo Cone`) and four bass (`8x10 Cone`, `8x10 Edge`, `1x15 Vintage`, `4x10 Horn`). Shipped as files inside the release archive, in a folder the user copies to `Music/Nave/Impulse Responses` — `IrLibrary::defaultDirectory()`, the folder the IR browser already scans out of the box.
+
+  **They are models, not captures.** Nothing here is a recording of any cabinet, speaker or microphone, and none is named after one. Each is computed by `tools/ir-synth/cabsynth.py` from a documented analytical model — driver/box alignment (second-order sealed, fourth-order vented, first-order dipole for an open back), cone-breakup modes, voice-coil-inductance roll-off, baffle and floor reflections at physical excess path lengths, microphone proximity and directivity, and for the room model four early reflections plus a diffuse tail from an explicitly-seeded LCG. #33 made unambiguous labelling a binding condition on ever shipping synthetic IRs: every filename begins with `modelled_`, and `tests/FactoryIrLibraryTests.cpp` asserts it rather than leaving it to review.
+
+  **Generating them is what cleared the licensing bar.** "Beyond doubt" licensing is very hard to source: a cabinet capture carries rights from the cabinet, from the microphone and from whoever pressed record, the popular free packs carry unclear or non-redistributable terms, and mirrors routinely misstate them. A generated IR removes the question rather than answering it — there is no third-party recording, so there is nothing to trace and no licensor to find. The generator ships with the audio: re-run it, get byte-identical output, compare the SHA-256 in `resources/irs/manifest.json`. All nine are dedicated to the public domain under **CC0 1.0 Universal** (legal code committed at `resources/irs/CC0-1.0.txt`), so no attribution is required of anybody.
+
+  The four bass cabinets are **byte-identical** to the ones bundled with `basilica-audio/Crypta`, generated from the same script and the same model ids.
+
+- **`tools/ir-synth/` — the generator and the verifier** (`cabsynth.py`, `verify_irs.py`, `README.md`). Standard-library Python 3 only: no numpy, no network access, deliberately, because a generator that needs a pinned scientific stack to reproduce its output is a weaker reproducibility claim than one that needs nothing. `verify_irs.py` measures the shipped `.wav` files as signals — format, clipping, DC, unity peak magnitude response, decay, bandwidth — and fails on any that do not clear the thresholds. It now gates CI on both platforms.
+
+- **`tests/FactoryIrLibraryTests.cpp`** — seven cases that verify the library through the plugin rather than through the measurement script: that `IrLibrary::scan()` (the browser's own scanner) lists all nine, that every filename is labelled as a model, that each decodes with the engine's reader to the documented format, that none clips or carries DC, that each is normalised to `max |H(f)| = 0 dBFS`, that each has faded to digital silence by its last sample rather than being cut off mid-ring, that **the convolution engine loads every one of the nine and audibly changes the signal**, and that the voicings are measurably different from one another (the cone/edge pairs, the dark/bright extremes, the bass/guitar low-end split, and the room model's tail).
+
+- `docs/manual.md` gains a **"The bundled library"** section: what the set contains, where to copy it, that the files are models rather than recordings, and which pairs are built to be blended against each other in the IR A / IR B slots.
+
+### Changed
+
+- The macOS and Windows release archives now stage an `Impulse Responses/` folder alongside `AU/`, `VST3/` and `Standalone/`, containing the nine IRs, `INSTALL.txt`, `LICENSES.md`, `CC0-1.0.txt` and `manifest.json`.
+
+### Notes
+
+- **The bundled IRs have not been listened to.** They are verified by measurement — response curves, DC, normalisation, decay, engine load, voicing spread — and labelled as such. Whether the set is the *right* set for the plugin's heavy-music focus, and whether each cabinet is musically convincing, is issue #33's remaining open question and needs ears.
+- **No factory presets reference the bundled IRs.** The `basilica-preset-1` format stores parameters only; IR audio lives in the plugin state blob (`IrState`, schema v2), not in presets, so a preset cannot name a cabinet without a format change. That part of #33's acceptance list is not implementable as scoped.
+
 ## [0.5.0] - 2026-08-20
 
 ### Fixed

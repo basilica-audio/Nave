@@ -43,6 +43,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cpm-
 
+      - name: Verify bundled impulse responses
+        # macOS only, on purpose. The assets are platform-independent bytes, so
+        # verifying them twice proves nothing; and `python3` is not reliably on
+        # PATH inside bash on the Windows runners, which would redden the job
+        # for a reason having nothing to do with the audio.
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Measures the shipped .wav files as signals - format, clipping, DC,
+          # unity peak magnitude response, decay, and the SHA-256 of each
+          # against the committed provenance record - and fails the job on any
+          # of them. Standard library only, so there is nothing to install.
+          # See resources/irs/LICENSES.md and tools/ir-synth/cabsynth.py.
+          python3 tools/ir-synth/verify_irs.py resources/irs \
+            --expect-manifest resources/irs/manifest.json \
+            --min-files 9
+
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
         run: brew install ninja

@@ -1,0 +1,45 @@
+Nave — bundled impulse response library
+=======================================
+
+WHAT THESE ARE
+
+Nine cabinet impulse responses, and all nine are MODELS rather than recordings.
+Each one is computed from a documented analytical cabinet model by the generator
+committed in the Nave repository (tools/ir-synth/cabsynth.py). None of them is a
+capture of a real cabinet, speaker or microphone, and none is named after one.
+That is why every filename starts with "modelled_".
+
+They are dedicated to the public domain under CC0 1.0 Universal. No attribution
+is required. The full legal code is in CC0-1.0.txt; the per-file provenance,
+model parameters, checksums and measured responses are in LICENSES.md and
+manifest.json.
+
+WHERE TO PUT THEM
+
+Copy the whole "Impulse Responses" folder to Nave's default library location, so
+the IR browser finds it without being pointed anywhere:
+
+  macOS     ~/Music/Nave/Impulse Responses
+  Windows   %USERPROFILE%\Music\Nave\Impulse Responses
+
+Then open Nave, click "Browse..." on either IR slot, and the library is listed.
+If you keep your IRs somewhere else, use the browser's "Folder..." button
+instead — Nave remembers the choice.
+
+WHAT IS IN THE SET
+
+  Guitar
+    modelled_4x12_ceramic_cone.wav    sealed 4x12, dynamic on the dust cap
+    modelled_4x12_ceramic_edge.wav    the same cabinet, microphone at the edge
+    modelled_4x12_ceramic_room.wav    the same cabinet at one metre, with a room
+    modelled_2x12_alnico_cone.wav     open-back 2x12, earlier breakup
+    modelled_1x12_combo_cone.wav      small open-back combo
+
+  Bass
+    modelled_8x10_cone.wav            sealed 8x10, dynamic on the dust cap
+    modelled_8x10_edge.wav            the same cabinet, microphone at the edge
+    modelled_1x15_vintage.wav         ported 1x15, ribbon, the dark one
+    modelled_4x10_horn.wav            ported 4x10 with an HF horn, the bright one
+
+The cone/edge pairs are built to be blended against each other in the IR A / IR B
+slots; Nave's inter-IR phase alignment handles the timing.

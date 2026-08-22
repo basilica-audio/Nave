@@ -114,6 +114,17 @@ jobs:
           cp -R "$COMPONENT_DIR/"*.component stage/AU/
           cp -R "$VST3_DIR/"*.vst3 stage/VST3/
           cp -R "$STANDALONE_DIR/"*.app stage/Standalone/
+          # Bundled factory IR library (issue #33): nine GENERATED cabinet
+          # models - not recordings - plus their CC0 dedication and the
+          # provenance record. Shipped as files rather than embedded in the
+          # binary because Nave's IR browser is a directory scanner: the user
+          # copies this folder to IrLibrary::defaultDirectory()
+          # (<music dir>/Nave/Impulse Responses) and the browser lists it.
+          # See resources/irs/LICENSES.md and resources/irs/INSTALL.txt.
+          mkdir -p "stage/Impulse Responses"
+          cp resources/irs/*.wav "stage/Impulse Responses/"
+          cp resources/irs/INSTALL.txt resources/irs/LICENSES.md \
+             resources/irs/CC0-1.0.txt resources/irs/manifest.json "stage/Impulse Responses/"
           for B in stage/AU/*.component stage/VST3/*.vst3 stage/Standalone/*.app; do
             codesign --force --options runtime --timestamp --sign "$IDENTITY" "$B"
             codesign --verify --strict "$B"
@@ -184,6 +195,17 @@ jobs:
           mkdir -p stage/VST3 stage/Standalone
           cp -R "$VST3_DIR/"*.vst3 stage/VST3/
           cp "$STANDALONE_DIR/"*.exe stage/Standalone/
+          # Bundled factory IR library (issue #33): nine GENERATED cabinet
+          # models - not recordings - plus their CC0 dedication and the
+          # provenance record. Shipped as files rather than embedded in the
+          # binary because Nave's IR browser is a directory scanner: the user
+          # copies this folder to IrLibrary::defaultDirectory()
+          # (<music dir>/Nave/Impulse Responses) and the browser lists it.
+          # See resources/irs/LICENSES.md and resources/irs/INSTALL.txt.
+          mkdir -p "stage/Impulse Responses"
+          cp resources/irs/*.wav "stage/Impulse Responses/"
+          cp resources/irs/INSTALL.txt resources/irs/LICENSES.md \
+             resources/irs/CC0-1.0.txt resources/irs/manifest.json "stage/Impulse Responses/"
           SLUG=$(basename "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
           cd stage && 7z a "../$SLUG-$GITHUB_REF_NAME-windows.zip" . && cd ..
           gh release upload "$GITHUB_REF_NAME" "$SLUG-$GITHUB_REF_NAME-windows.zip" --clobber -R "$GITHUB_REPOSITORY"
