@@ -18,10 +18,27 @@ derived, not measured hardware).
 | **Even Blend** | Guitar | The sourced 50/50 discrete stopping point for two genuinely complementary IRs (two cabs, or close+room) - requires an IR loaded into slot B to be audible. |
 | **Parallel Cab (Blended Dry)** | Guitar | Showcases Mix as a genuine parallel-processing tool: a moderate Distance push (~20%) blended with a partial Mix (~65%) for a thickened, less "all-or-nothing" cab tone. |
 
-None of the presets reference specific IR files - loading an IR into slot A/B
-is always a separate, explicit user action (see `docs/manual.md`'s
-"Loading impulse responses" section). "Touch of Room Mic" and "Even Blend"
-only become audible once something real is loaded into slot B.
+Three presets reference specific bundled IRs (#42): **Even Blend** and
+**Touch of Room Mic** name *4x12 Ceramic Cone* + *4x12 Room 1m* — the
+close+room pair their own descriptions call for — and **Mic Morph** names
+*4x12 Ceramic Cone* + *4x12 Ceramic Edge*, two positions on the same cabinet.
+Before that they were silent no-ops out of the box, because they blend a
+slot B nothing had loaded.
+
+The reference is **optional and overridable**. Every other preset carries
+none and behaves exactly as before: loading an IR into slot A/B is a separate,
+explicit user action (see `docs/manual.md`, "Loading impulse responses"), and
+loading a preset and then swapping the cab is the intended thing, not a fight
+with the format.
+
+References resolve by **content hash, never by name**. If a referenced IR is
+not present the preset still loads with every parameter applied, the currently
+loaded IR is left in place, and a notice names what was expected — no
+substitution, ever. That matters more than it sounds: a substituted cab would
+let the preset keep loading, keep looking correct, and quietly recall a
+different sound, which is precisely the failure a preset exists to prevent.
+The bundled library must be installed (Browse… > Install Library) for the
+three references above to resolve.
 
 ## v0.3.0 additions
 

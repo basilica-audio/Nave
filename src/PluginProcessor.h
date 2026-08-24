@@ -4,7 +4,11 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include "dsp/CabConvolutionEngine.h"
+#include "ir/IrContentIndex.h"
+#include "presets/IrReference.h"
 #include "presets/PresetManager.h"
+
+#include <functional>
 
 // Nave: a cabinet impulse-response (IR) loader for reamping guitar/bass DI
 // tracks. Signal flow lives in CabConvolutionEngine (src/dsp) so it stays
@@ -91,6 +95,29 @@ public:
     void loadDefaultImpulseResponseB();
     juce::String getCurrentIrFilePathB() const;
 
+    // The RAW impulse response the convolution engine currently holds for
+    // slot `slotIndex` (0 = A, 1 = B) - pre-alignment, pre-min-phase,
+    // pre-normalisation, i.e. exactly the samples getStateInformation()
+    // embeds. Message thread only.
+    //
+    // A pass-through of CabConvolutionEngine's own public accessor, exposed
+    // here so a caller can ask what the CONVOLVER holds rather than what a
+    // path property says it should. Those are different questions:
+    // getCurrentIrFilePath() would still name a file if the audio behind it
+    // had never reached the DSP, which is the difference between proving a
+    // preset's IR reference selected an IR and proving a JSON field
+    // round-tripped (see tests/PresetIrReferenceTests.cpp).
+    const juce::AudioBuffer<float>& getLoadedImpulseResponse (int slotIndex) const noexcept;
+    double getLoadedImpulseResponseSampleRate (int slotIndex) const noexcept;
+
+    // Installs this processor's issue-#42 IR-reference hooks onto `manager`
+    // (see PresetManagerConfig::captureExtraFields/applyExtraFields). Done
+    // for the processor's own `presetManager` at construction; also public so
+    // a test can drive an isolated manager - one pointed at a scratch preset
+    // directory instead of the user's real one - through the exact production
+    // code path rather than a re-implementation of it.
+    void installPresetIrCallbacks (basilica::presets::PresetManager& manager);
+
     juce::AudioProcessorValueTreeState apvts;
 
     // M2 preset system (.scaffold/specs/preset-system-m2.md,
@@ -100,6 +127,31 @@ public:
     // same "processor owns it, editor references it" pattern apvts itself
     // already uses.
     basilica::presets::PresetManager presetManager;
+
+    //==============================================================================
+    // Preset -> IR references (issue #42, src/presets/IrReference.h).
+
+    // The notice raised by the most recent preset load, or an empty string
+    // when that load had nothing to report. Non-empty means the preset named
+    // an IR that is not in the user's library: its PARAMETERS were still
+    // applied and the IR slots were left exactly as they were - a preset never
+    // fails to open over a missing IR, and a missing IR is never quietly
+    // replaced by a different one. Message thread only.
+    juce::String getPresetIrNotice() const { return presetIrNotice; }
+
+    // Called on the message thread, immediately after a preset load that
+    // raised a notice, with the same text getPresetIrNotice() returns. The
+    // editor sets this to show the notice non-modally and clears it in its
+    // destructor; a headless/no-editor instance simply leaves it null and the
+    // text is still readable via getPresetIrNotice().
+    std::function<void (const juce::String&)> onPresetIrNotice;
+
+    // Folders searched (in order) when resolving a preset's IR reference: the
+    // library folder the IR browser is pointed at, then the out-of-the-box
+    // default one. Exposed for tests and for the editor, which re-points the
+    // index when the user changes their library folder.
+    std::vector<juce::File> getIrSearchRoots() const;
+    void refreshIrSearchRoots();
 
 private:
     void parameterChanged (const juce::String& parameterId, float newValue) override;
@@ -121,6 +173,29 @@ private:
     // embedded audio first (authoritative), then the stored path, then the
     // default delta IR.
     void restoreImpulseResponsesFromState();
+
+    // PresetManagerConfig::captureExtraFields: records the SHA-256 (plus a
+    // display name, for messages only) of whatever is loaded in each IR slot
+    // onto a preset being saved. Writes nothing when no IR is loaded, so a
+    // preset saved from the default delta IR is byte-identical to what the
+    // pre-#42 saver produced.
+    void capturePresetIrReferences (juce::DynamicObject& presetObject);
+
+    // PresetManagerConfig::applyExtraFields: the whole of decision D2. For
+    // each referenced slot: if the loaded IR already IS those bytes, do
+    // nothing; else look the bytes up in irContentIndex and load the file
+    // that matches; else - and this is the case that matters - leave the slot
+    // untouched and add the expected IR's name to the notice. Never
+    // substitutes, never refuses the preset.
+    void applyPresetIrReferences (const juce::var& presetObject);
+
+    // The bundled library's display name for a digest, or an empty string
+    // when the digest is not one of Nave's own IRs. Used only to make a miss
+    // actionable ("...use Install Library"), never to resolve anything.
+    juce::String bundledDisplayNameForContentHash (const juce::String& contentHash) const;
+
+    basilica::ir::IrContentIndex irContentIndex;
+    juce::String presetIrNotice;
 
     CabConvolutionEngine engine;
 

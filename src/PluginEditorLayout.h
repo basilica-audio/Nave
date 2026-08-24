@@ -57,6 +57,13 @@ namespace nave::layout
     // convention. NEVER hand-adjust these independently of the manifest -
     // tests/gui/EditorLayoutTests.cpp asserts both representations agree.
     const juce::Rectangle<int> irLoaderBay1x { 100, 145, 700, 100 };
+    // The preset IR notice strip (issue #42): the empty band of plate art
+    // between the IR loader bay's bottom edge (245) and the parameter bays'
+    // top edge (310). NOT a manifest bay - it carries no controls and is
+    // hidden unless a loaded preset referenced an IR that is not in the
+    // user's library, so it never competes with the engraved bay artwork.
+    const juce::Rectangle<int> irNoticeStrip1x { 100, 252, 700, 46 };
+
     const juce::Rectangle<int> toneBay1x { 100, 310, 220, 160 };
     const juce::Rectangle<int> characterBay1x { 340, 310, 220, 160 };
     const juce::Rectangle<int> outputBay1x { 580, 310, 220, 160 };

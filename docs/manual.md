@@ -203,6 +203,27 @@ Every parameter added in v0.3.0 defaults to a value that changes nothing, so a s
 
 A preset bar sits at the top of Nave's editor: `[<] [PresetName] [>] [Save] [Save As...] [Delete] [Import...] [Export...]`. Click the preset name to open the full list (factory presets first, then your own, both alphabetical); `<`/`>` step through the same list. Ten factory presets ship with Nave — see [`docs/presets.md`](presets.md) for what each one is for. Your own presets save to `~/Library/Audio/Presets/Yves Vogl/Nave/` on macOS (`%APPDATA%\Yves Vogl\Nave\Presets\` on Windows); "Set current as default" (in the preset menu) controls what a freshly inserted instance of Nave loads. Import/Export both accept single preset files; Import also accepts a `.zip` preset bank exported by `PresetManager::exportBank()`.
 
+### Presets and cabinets
+
+**A preset may name the cabinet it was made with, and never has to.** When you save a preset, Nave records a fingerprint of whatever is loaded in IR A and IR B — a checksum of the file's audio, plus its name for display. Load that preset again and Nave looks for those exact IRs in your library folder and puts them back. A preset saved with no IR loaded records nothing, and loads exactly as presets always have: parameters only, cabinets untouched.
+
+**Loading a preset and then swapping the cabinet is the intended thing to do.** The reference is a starting point, not a lock. Change the IR afterwards and nothing fights you; save over the preset and it remembers the new one instead.
+
+**Three factory presets ship with a reference** — *Even Blend*, *Touch of Room Mic* and *Mic Morph* — because each of those is a recipe for a specific *pair* of captures rather than a tone-shaping setting, and the pairs are in Nave's own bundled library. The other seven deliberately reference nothing: they are LoCut/HiCut/Distance/Mix recipes meant to apply to whichever cabinet you already have up. If you have not yet installed the bundled library, open **Browse...** in either IR slot and press **Install Library**, and the three referenced presets will find their cabinets from then on.
+
+### When a preset's cabinet is missing
+
+**A missing IR never stops a preset from opening.** If Nave cannot find the referenced audio — you have not installed the bundled library, the preset came from someone else, you moved or deleted the file — then:
+
+- the preset's **parameters load in full**, exactly as if it carried no reference at all;
+- the IR slots are **left exactly as they were**. Whatever cabinet you had up stays up;
+- **nothing is substituted.** Nave will not load a different IR that happens to be nearby, or one with a similar name. A preset that quietly recalled the wrong cabinet would sound plausible and be wrong, which is worse than one that tells you something is missing;
+- a **notice appears** below the IR slots naming what was expected — for example, *"This preset was made with "Modelled 4x10 Horn" (IR A), which is not in your IR library."* It is not a dialog and does not need dismissing; it clears itself the next time you load a preset or change an IR yourself.
+
+Nave matches IRs by their **audio content**, not by their file name or a catalogue id. That is why renaming or moving a file does not break a preset — the audio is the same, so it still resolves. It is also why an IR that has been *edited* no longer matches: the sound changed, so the preset says so instead of loading different audio under the old name.
+
+**Older versions of Nave read these presets too.** A preset saved by this version opens in a build that predates the feature: it loads with its parameters intact and simply ignores the cabinet reference it does not understand.
+
 ## Under the hood
 
 The reasoning and full technical detail live in `docs/architecture.md`; the numbers below are what the automated test suite enforces on every push.
