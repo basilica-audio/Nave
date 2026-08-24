@@ -2,6 +2,8 @@
 #include "PluginProcessor.h"
 #include "../TestHelpers.h"
 #include "gui/IrBrowserPanel.h"
+#include "ir/FactoryIrLibrary.h"
+#include "ir/IrLibrary.h"
 #include "params/ParameterIds.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -286,4 +288,119 @@ TEST_CASE ("Browser rows expose their display names to accessibility clients", "
     // surfaces, so they cannot drift.
     CHECK (fixture.panel->displayNameForRow (0)
            == juce::String ("rooms") + juce::File::getSeparatorString() + "close.wav");
+}
+
+//==============================================================================
+// "Install Library" (issue #33): the browser's affordance for writing the
+// plugin's bundled IR library into the folder it already scans by default.
+//
+// These use a standalone IrBrowserPanel rather than the editor's, deliberately.
+// The editor decides whether to offer the install by looking at the REAL
+// default library folder (~/Music/Nave/Impulse Responses), so a test driven
+// through the editor would pass or fail depending on whether the machine
+// running it happens to have the library installed - and clicking the button
+// there would write into the developer's own Music folder. The install itself
+// is covered against temporary directories in tests/FactoryIrInstallTests.cpp.
+
+TEST_CASE ("Install Library is offered only when the owner both wires it and asks for it",
+           "[gui][ir-browser][install]")
+{
+    basilica::gui::IrBrowserPanel panel;
+
+    auto* installButton = dynamic_cast<juce::TextButton*> (panel.findChildWithID ("irBrowser.installButton"));
+    REQUIRE (installButton != nullptr);
+
+    // Hidden by default: a sibling plugin reusing this panel may bundle
+    // nothing at all, and must not inherit a button for it.
+    CHECK_FALSE (panel.isFactoryLibraryInstallOffered());
+
+    // Asked for, but with no handler wired - offering a button that could only
+    // do nothing would be worse than not offering one.
+    panel.setFactoryLibraryInstallOffered (true);
+    CHECK_FALSE (panel.isFactoryLibraryInstallOffered());
+
+    int installRequests = 0;
+    panel.onInstallFactoryLibrary = [&installRequests] { ++installRequests; };
+
+    panel.setFactoryLibraryInstallOffered (true);
+    CHECK (panel.isFactoryLibraryInstallOffered());
+
+    REQUIRE (installButton->onClick);
+    installButton->onClick();
+    CHECK (installRequests == 1);
+
+    // The owner withdraws the offer once the library is installed.
+    panel.setFactoryLibraryInstallOffered (false);
+    CHECK_FALSE (panel.isFactoryLibraryInstallOffered());
+}
+
+TEST_CASE ("An empty library folder points at the install when one is on offer",
+           "[gui][ir-browser][install]")
+{
+    basilica::gui::IrBrowserPanel panel;
+    panel.onInstallFactoryLibrary = [] {};
+
+    auto* status = dynamic_cast<juce::Label*> (panel.findChildWithID ("irBrowser.status"));
+    REQUIRE (status != nullptr);
+
+    const juce::File emptyRoot;
+
+    panel.applyScanResults ({}, emptyRoot);
+    CHECK (status->getText() == juce::String ("No impulse responses found - choose a library folder"));
+
+    panel.setFactoryLibraryInstallOffered (true);
+    panel.applyScanResults ({}, emptyRoot);
+
+    // The one moment the hint is actually actionable: nothing to list, and a
+    // library sitting inside the binary waiting to be written out.
+    CHECK (status->getText().contains ("install the bundled library"));
+}
+
+TEST_CASE ("A failed install is reported in the status row and cleared by the next scan",
+           "[gui][ir-browser][install]")
+{
+    BrowserFixture fixture;
+
+    auto* status = dynamic_cast<juce::Label*> (fixture.panel->findChildWithID ("irBrowser.status"));
+    REQUIRE (status != nullptr);
+
+    // A successful install reports itself by the cabinets appearing in the
+    // list. A failed one cannot - the folder looks exactly as empty as it did
+    // before - so it is the case that needs a message.
+    fixture.panel->showStatusMessage ("Could not install 1 file: modelled_4x12_ceramic_cone.wav");
+    CHECK (status->getText().contains ("Could not install"));
+
+    // Any subsequent scan re-derives the row from the listing, so a stale
+    // failure cannot outlive the folder state it described.
+    fixture.panel->setLibraryDirectory (fixture.libraryRoot.root);
+    CHECK_FALSE (status->getText().contains ("Could not install"));
+}
+
+TEST_CASE ("A cabinet from a freshly installed library loads into the target slot",
+           "[gui][ir-browser][install][processor]")
+{
+    BrowserFixture fixture;
+
+    // End-to-end over the wiring this issue adds: embedded bytes -> installed
+    // files -> the browser's own directory scan -> the slot load. The install
+    // targets the fixture's temporary root, never the real library folder.
+    const auto install = basilica::ir::FactoryIrLibrary::installInto (fixture.libraryRoot.root,
+                                                                      nave::factoryIrAssets());
+    INFO ("install summary: " << install.summary());
+    REQUIRE (install.succeeded());
+
+    const auto scanned = basilica::ir::IrLibrary::scan (fixture.libraryRoot.root);
+    REQUIRE (scanned.size() == 9);
+
+    fixture.browseButtonFor ("irSlotA")->onClick();
+    fixture.panel->applyScanResults (scanned, fixture.libraryRoot.root);
+
+    REQUIRE (fixture.panel->getNumVisibleFiles() == 9);
+
+    // Every row is a model, and reads as one in the list the user sees.
+    for (int row = 0; row < fixture.panel->getNumVisibleFiles(); ++row)
+        CHECK (fixture.panel->displayNameForRow (row).startsWith ("modelled_"));
+
+    fixture.fileList->selectRow (0);
+    CHECK (fixture.processor.getCurrentIrFilePath() == scanned.getFirst().getFullPathName());
 }
