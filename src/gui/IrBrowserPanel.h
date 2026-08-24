@@ -59,6 +59,15 @@ namespace basilica::gui
         // owner can persist it into the plugin state.
         std::function<void (const juce::File& newFolder)> onLibraryFolderChanged;
 
+        // Fired when the user asks for the plugin's bundled IR library to be
+        // written to disk ("Install Library", issue #33). The OWNER performs
+        // the install - it is the only side that knows what it bundles and
+        // where its default library folder is - and then normally calls
+        // setLibraryDirectory() to point the browser at the result. Leaving
+        // this unset removes the affordance entirely, which is what keeps
+        // the panel reusable by siblings that bundle no content.
+        std::function<void()> onInstallFactoryLibrary;
+
         // Shows the panel targeting the given slot ("IR A"/"IR B") and
         // (re)scans `libraryFolder` (falling back to
         // IrLibrary::defaultDirectory() if it is not a valid path).
@@ -68,6 +77,19 @@ namespace basilica::gui
         // rescans. Public so tests can drive the folder flow without the
         // (native, async) directory chooser.
         void setLibraryDirectory (const juce::File& newFolder);
+
+        // Shows or hides the "Install Library" button. The owner decides
+        // whether an install is worth offering (it knows whether its bundled
+        // library is already on disk and intact); the panel only renders the
+        // decision. Has no effect unless onInstallFactoryLibrary is set.
+        void setFactoryLibraryInstallOffered (bool shouldOffer);
+
+        bool isFactoryLibraryInstallOffered() const noexcept { return installButton.isVisible(); }
+
+        // Replaces the status row's text until the next scan. Used for the
+        // one outcome the listing itself cannot express - an install that
+        // failed, where a successful one simply shows up as files appearing.
+        void showStatusMessage (const juce::String& message);
 
         // Applies the substring filter. Public seam for tests: the filter
         // TextEditor's change notifications are posted asynchronously (JUCE
@@ -116,6 +138,7 @@ namespace basilica::gui
         juce::Label folderLabel;
         juce::Label statusLabel;
         juce::TextButton folderButton;
+        juce::TextButton installButton;
         juce::TextButton closeButton;
         juce::TextEditor filterEditor;
         juce::ListBox fileList;
@@ -127,6 +150,7 @@ namespace basilica::gui
         juce::Array<juce::File> allFiles;
         juce::Array<int> visibleRows; // indices into allFiles, post-filter
         juce::String filterText;      // lower-cased, trimmed
+        juce::String statusOverride;  // shown instead of the listing summary until the next scan
         int lastLoadedRow = -1;       // index into visibleRows
         bool scanning = false;
 

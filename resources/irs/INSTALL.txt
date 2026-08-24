@@ -14,7 +14,15 @@ is required. The full legal code is in CC0-1.0.txt; the per-file provenance,
 model parameters, checksums and measured responses are in LICENSES.md and
 manifest.json.
 
-WHERE TO PUT THEM
+YOU PROBABLY DO NOT NEED THIS FOLDER
+
+The same nine files ship inside the plugin itself. Open Nave, click "Browse..."
+on either IR slot, and press "Install Library": it writes them to the default
+library location below and lists them straight away. Nothing is written until
+you press it. This copy is here for anyone who would rather place the files by
+hand, or put them somewhere else entirely.
+
+WHERE TO PUT THEM, IF YOU DO IT YOURSELF
 
 Copy the whole "Impulse Responses" folder to Nave's default library location, so
 the IR browser finds it without being pointed anywhere:

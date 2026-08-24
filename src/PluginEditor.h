@@ -7,9 +7,27 @@
 #include "gui/BasilicaLookAndFeel.h"
 #include "gui/FilmstripKnob.h"
 #include "gui/IrBrowserPanel.h"
+#include "ir/FactoryIrLibrary.h"
 #include "presets/PresetBar.h"
 
+#include <vector>
+
 class NaveAudioProcessor;
+
+namespace nave
+{
+    // Nave's bundled IR library (issue #33) as embedded bytes, in the exact
+    // list the browser's "Install Library" button writes to disk.
+    //
+    // Declared here rather than kept file-local in PluginEditor.cpp so that
+    // tests can assert the *shipped* list against the verified files in
+    // resources/irs/ - the one thing that could silently go wrong with an
+    // embedded copy is drifting away from the audio that verify_irs.py and
+    // the committed SHA-256 manifest actually vouch for. The definition
+    // lives in PluginEditor.cpp, which is one of the two translation units
+    // permitted to include BinaryData.h (see CMakeLists.txt).
+    const std::vector<basilica::ir::FactoryIrAsset>& factoryIrAssets();
+}
 
 // M3 GUI pass: Nave's photoreal skeuomorphic editor, built from the suite's
 // reusable src/gui/ component family (FilmstripKnob, BasilicaLookAndFeel -

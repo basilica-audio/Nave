@@ -19,6 +19,7 @@ namespace basilica::gui
         constexpr int statusRowHeight = 24;
         constexpr int rowGap = 8;
         constexpr int listRowHeight = 22;
+        constexpr int installButtonWidth = 116; // fits "Install Library" at the panel's button font
         constexpr float panelCornerSize = 8.0f;
 
         // Scrim + panel colours, derived from the suite palette: the scrim
@@ -56,6 +57,19 @@ namespace basilica::gui
         folderButton.setTitle ("Choose impulse response library folder");
         folderButton.onClick = [this] { chooseFolder(); };
         addAndMakeVisible (folderButton);
+
+        // addChildComponent, not addAndMakeVisible: the install affordance
+        // stays out of the way until the owner says there is something worth
+        // installing (see setFactoryLibraryInstallOffered).
+        installButton.setComponentID ("irBrowser.installButton");
+        installButton.setButtonText ("Install Library");
+        installButton.setTitle ("Install the bundled impulse response library");
+        installButton.onClick = [this]
+        {
+            if (onInstallFactoryLibrary != nullptr)
+                onInstallFactoryLibrary();
+        };
+        addChildComponent (installButton);
 
         filterEditor.setComponentID ("irBrowser.filter");
         filterEditor.setTitle ("Filter impulse responses");
@@ -149,8 +163,29 @@ namespace basilica::gui
         beginScan();
     }
 
+    void IrBrowserPanel::setFactoryLibraryInstallOffered (bool shouldOffer)
+    {
+        const auto offer = shouldOffer && onInstallFactoryLibrary != nullptr;
+
+        if (offer == installButton.isVisible())
+            return;
+
+        installButton.setVisible (offer);
+        resized(); // the folder row reserves width for the button only while it is shown
+    }
+
+    void IrBrowserPanel::showStatusMessage (const juce::String& message)
+    {
+        statusOverride = message;
+        updateStatusText();
+    }
+
     void IrBrowserPanel::beginScan()
     {
+        // A scan re-derives the status row from the listing, so whatever a
+        // previous message said about the folder is now stale by definition.
+        statusOverride.clear();
+
         scanning = true;
         allFiles.clearQuick();
         lastLoadedRow = -1;
@@ -221,10 +256,14 @@ namespace basilica::gui
     {
         juce::String text;
 
-        if (scanning)
+        if (statusOverride.isNotEmpty())
+            text = statusOverride;
+        else if (scanning)
             text = "Scanning...";
         else if (allFiles.isEmpty())
-            text = "No impulse responses found - choose a library folder";
+            text = installButton.isVisible()
+                       ? "No impulse responses found - install the bundled library, or choose a folder"
+                       : "No impulse responses found - choose a library folder";
         else if (visibleRows.isEmpty())
             text = "No matches for the current filter";
         else if (filterText.isNotEmpty())
@@ -385,6 +424,15 @@ namespace basilica::gui
 
         auto folderRow = content.removeFromTop (controlRowHeight);
         folderButton.setBounds (folderRow.removeFromRight (88));
+
+        // Only claim width while the button is actually shown, so the folder
+        // path keeps the full row in the (usual) installed case.
+        if (installButton.isVisible())
+        {
+            folderRow.removeFromRight (rowGap);
+            installButton.setBounds (folderRow.removeFromRight (installButtonWidth));
+        }
+
         folderRow.removeFromRight (rowGap);
         folderLabel.setBounds (folderRow);
 

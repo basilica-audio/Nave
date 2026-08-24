@@ -9,13 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (headline: a bundled IR library, generated rather than sourced)
 
-- **Nine bundled cabinet impulse responses** (`resources/irs/`, issue #33) — five guitar (`4x12 Ceramic Cone`, `4x12 Ceramic Edge`, `4x12 Room 1m`, `2x12 Alnico Cone`, `1x12 Combo Cone`) and four bass (`8x10 Cone`, `8x10 Edge`, `1x15 Vintage`, `4x10 Horn`). Shipped as files inside the release archive, in a folder the user copies to `Music/Nave/Impulse Responses` — `IrLibrary::defaultDirectory()`, the folder the IR browser already scans out of the box.
+- **Nine bundled cabinet impulse responses** (`resources/irs/`, issue #33) — five guitar (`4x12 Ceramic Cone`, `4x12 Ceramic Edge`, `4x12 Room 1m`, `2x12 Alnico Cone`, `1x12 Combo Cone`) and four bass (`8x10 Cone`, `8x10 Edge`, `1x15 Vintage`, `4x10 Horn`). Embedded in the plugin and installed on request into `Music/Nave/Impulse Responses` — `IrLibrary::defaultDirectory()`, the folder the IR browser already scans out of the box — and also staged as loose files in the release archive for anyone who would rather place them by hand (see **Install Library** below).
 
   **They are models, not captures.** Nothing here is a recording of any cabinet, speaker or microphone, and none is named after one. Each is computed by `tools/ir-synth/cabsynth.py` from a documented analytical model — driver/box alignment (second-order sealed, fourth-order vented, first-order dipole for an open back), cone-breakup modes, voice-coil-inductance roll-off, baffle and floor reflections at physical excess path lengths, microphone proximity and directivity, and for the room model four early reflections plus a diffuse tail from an explicitly-seeded LCG. #33 made unambiguous labelling a binding condition on ever shipping synthetic IRs: every filename begins with `modelled_`, and `tests/FactoryIrLibraryTests.cpp` asserts it rather than leaving it to review.
 
   **Generating them is what cleared the licensing bar.** "Beyond doubt" licensing is very hard to source: a cabinet capture carries rights from the cabinet, from the microphone and from whoever pressed record, the popular free packs carry unclear or non-redistributable terms, and mirrors routinely misstate them. A generated IR removes the question rather than answering it — there is no third-party recording, so there is nothing to trace and no licensor to find. The generator ships with the audio: re-run it, get byte-identical output, compare the SHA-256 in `resources/irs/manifest.json`. All nine are dedicated to the public domain under **CC0 1.0 Universal** (legal code committed at `resources/irs/CC0-1.0.txt`), so no attribution is required of anybody.
 
   The four bass cabinets are **byte-identical** to the ones bundled with `basilica-audio/Crypta`, generated from the same script and the same model ids.
+
+- **The bundled library installs itself, from inside the plugin** (`src/ir/FactoryIrLibrary.{h,cpp}`, issue #33). The nine IRs plus `LICENSES.md`, `CC0-1.0.txt` and `manifest.json` are now embedded via `juce_add_binary_data`, and the IR browser grows an **Install Library** button that writes them into `IrLibrary::defaultDirectory()` (`Music/Nave/Impulse Responses`) and lists them immediately.
+
+  This is what makes the library reachable. The browser is a directory scanner, so a library that exists only inside the release archive is one the plugin cannot see until the user has found the archive again, found the right folder in it, and copied it to exactly the right path — three chances to end up looking at "No impulse responses found" with the cabinets sitting on disk two folders away. The archive copy stays, for anyone who would rather place the files themselves.
+
+  **Nothing is written without a click.** `IrLibrary::defaultDirectory()` documents that it deliberately creates nothing, and that is unchanged: the button is the only caller, and it is only offered while the library is not already installed intact. "Intact" is checked byte-wise rather than by existence, so a truncated or edited file re-offers the install instead of leaving a broken cabinet in the list — which also makes the action a repair, and makes running it twice a no-op.
+
+  The provenance files travel with the audio rather than staying behind in the repository, because #33's licensing bar is a licence committed *alongside* the audio; an installed copy without it would not meet the bar it was written for. None of the three is an audio file, so the browser never lists them as cabinets.
+
+  Cost: **+127.2 KiB of embedded assets per architecture slice**, i.e. +278 KiB on the universal macOS VST3 binary (62,217,072 → 62,501,712 bytes) and +294 KiB on the AU.
+
+- **`tests/FactoryIrInstallTests.cpp` and four new IR-browser cases** — that the embedded copy is byte-identical to the verified files in `resources/irs/` (the one failure mode an embedded duplicate introduces: drifting away from the audio that `verify_irs.py` and the committed SHA-256 manifest actually vouch for), that installing into an empty folder produces exactly nine browsable cabinets and three provenance files, that a second install writes nothing, that a truncated *and* a deleted file are both detected and repaired, that an installed cabinet loads through the convolution engine and changes the signal, and that a row from a freshly installed library loads into the target slot through the editor's real browser wiring. Every install in the suite targets a temporary directory — the real `Music` folder is never a destination in a test.
 
 - **`tools/ir-synth/` — the generator and the verifier** (`cabsynth.py`, `verify_irs.py`, `README.md`). Standard-library Python 3 only: no numpy, no network access, deliberately, because a generator that needs a pinned scientific stack to reproduce its output is a weaker reproducibility claim than one that needs nothing. `verify_irs.py` measures the shipped `.wav` files as signals — format, clipping, DC, unity peak magnitude response, decay, bandwidth — and fails on any that do not clear the thresholds. It now gates CI on both platforms.
 
@@ -25,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The macOS and Windows release archives now stage an `Impulse Responses/` folder alongside `AU/`, `VST3/` and `Standalone/`, containing the nine IRs, `INSTALL.txt`, `LICENSES.md`, `CC0-1.0.txt` and `manifest.json`.
+- The macOS and Windows release archives now stage an `Impulse Responses/` folder alongside `AU/`, `VST3/` and `Standalone/`, containing the nine IRs, `INSTALL.txt`, `LICENSES.md`, `CC0-1.0.txt` and `manifest.json`. `INSTALL.txt` now leads with the in-plugin **Install Library** button and presents the hand-copy route as the alternative it has become.
 
 ### Notes
 

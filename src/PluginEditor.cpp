@@ -2,6 +2,7 @@
 #include "PluginEditorLayout.h"
 #include "PluginProcessor.h"
 #include "gui/ImageDensity.h"
+#include "ir/FactoryIrLibrary.h"
 #include "ir/IrLibrary.h"
 #include "params/ParameterIds.h"
 #include "presets/Localisation.h"
@@ -15,6 +16,7 @@ namespace
     // assert layout invariants against the exact constants this file lays
     // components out with - see that header's docs.
     using namespace nave::layout;
+
 
     // Nave's 6 parameters split across the tone/character/output bays
     // (.scaffold/gui-assets/faceplate-nave-v1/layout-manifest.json), 2 knobs
@@ -90,6 +92,49 @@ namespace
     constexpr const char* uiScaleStepProperty = "uiScaleStep";
 }
 
+// The bundled factory IR library (issue #33), as embedded bytes. Declared in
+// PluginEditor.h; defined here because this is one of the two translation
+// units allowed to include BinaryData.h (see CMakeLists.txt).
+//
+// This function is the whole of Nave's coupling to src/ir/FactoryIrLibrary.
+// {h,cpp}: that module never sees BinaryData.h, exactly as src/presets/
+// PresetManager.h never does, so both stay copyable into a sibling plugin
+// that bundles different content.
+//
+// The nine .wav files are the audio; LICENSES.md, CC0-1.0.txt and
+// manifest.json travel with them because #33's licensing bar is a licence
+// file committed *alongside* the audio - an installed copy that left the
+// provenance behind in the repository would not meet it. None of the three
+// is an audio file, so IrLibrary::scan() never lists them as cabinets.
+const std::vector<basilica::ir::FactoryIrAsset>& nave::factoryIrAssets()
+{
+    static const std::vector<basilica::ir::FactoryIrAsset> assets
+    {
+        // Guitar
+        { "modelled_4x12_ceramic_cone.wav", BinaryData::modelled_4x12_ceramic_cone_wav, BinaryData::modelled_4x12_ceramic_cone_wavSize },
+        { "modelled_4x12_ceramic_edge.wav", BinaryData::modelled_4x12_ceramic_edge_wav, BinaryData::modelled_4x12_ceramic_edge_wavSize },
+        { "modelled_4x12_ceramic_room.wav", BinaryData::modelled_4x12_ceramic_room_wav, BinaryData::modelled_4x12_ceramic_room_wavSize },
+        { "modelled_2x12_alnico_cone.wav",  BinaryData::modelled_2x12_alnico_cone_wav,  BinaryData::modelled_2x12_alnico_cone_wavSize },
+        { "modelled_1x12_combo_cone.wav",   BinaryData::modelled_1x12_combo_cone_wav,   BinaryData::modelled_1x12_combo_cone_wavSize },
+
+        // Bass
+        { "modelled_8x10_cone.wav",         BinaryData::modelled_8x10_cone_wav,         BinaryData::modelled_8x10_cone_wavSize },
+        { "modelled_8x10_edge.wav",         BinaryData::modelled_8x10_edge_wav,         BinaryData::modelled_8x10_edge_wavSize },
+        { "modelled_1x15_vintage.wav",      BinaryData::modelled_1x15_vintage_wav,      BinaryData::modelled_1x15_vintage_wavSize },
+        { "modelled_4x10_horn.wav",         BinaryData::modelled_4x10_horn_wav,         BinaryData::modelled_4x10_horn_wavSize },
+
+        // Provenance
+        { "LICENSES.md",                    BinaryData::LICENSES_md,                    BinaryData::LICENSES_mdSize },
+        // BinaryData::CC01_0_txt, not CC0_1_0_txt: juce_add_binary_data drops
+        // the hyphen rather than mapping it to an underscore, so the symbol
+        // for "CC0-1.0.txt" is not the mechanical substitution it looks like.
+        { "CC0-1.0.txt",                    BinaryData::CC01_0_txt,                     BinaryData::CC01_0_txtSize },
+        { "manifest.json",                  BinaryData::manifest_json,                  BinaryData::manifest_jsonSize },
+    };
+
+    return assets;
+}
+
 NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processorToEdit)
     : juce::AudioProcessorEditor (&processorToEdit),
       audioProcessor (processorToEdit),
@@ -161,6 +206,31 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
         // themselves (ParamIDs::irLibraryFolderProperty's docs).
         audioProcessor.apvts.state.setProperty (ParamIDs::irLibraryFolderProperty,
                                                 newFolder.getFullPathName(), nullptr);
+    };
+    // "Install Library" (issue #33): unpack the bundled IRs into the folder
+    // the browser already scans by default, then point the browser at it.
+    // Only reachable from the button, which openIrBrowserForSlot() only shows
+    // when the library is not already installed intact - nothing writes to the
+    // user's Music folder without an explicit click.
+    irBrowserPanel.onInstallFactoryLibrary = [this]
+    {
+        const auto destination = basilica::ir::IrLibrary::defaultDirectory();
+        const auto result = basilica::ir::FactoryIrLibrary::installInto (destination, nave::factoryIrAssets());
+
+        if (! result.succeeded())
+        {
+            // The listing cannot express this: a failed install leaves the
+            // folder looking exactly as empty as before it was attempted.
+            irBrowserPanel.showStatusMessage (result.summary());
+            return;
+        }
+
+        // setLibraryDirectory() fires onLibraryFolderChanged (persisting the
+        // choice) and rescans, so the freshly written cabinets appear in the
+        // list without any further gesture - which is the whole point of the
+        // button, and is also what reports success: files, not a message.
+        irBrowserPanel.setLibraryDirectory (destination);
+        irBrowserPanel.setFactoryLibraryInstallOffered (false);
     };
     irBrowserPanel.onDismiss = [this]
     {
@@ -328,6 +398,16 @@ void NaveAudioProcessorEditor::openIrBrowserForSlot (IrSlotId id, const juce::St
 
     const auto libraryFolder = storedFolder.isNotEmpty() ? juce::File (storedFolder)
                                                          : basilica::ir::IrLibrary::defaultDirectory();
+
+    // Offer the install only while there is something to install. Checked on
+    // every open rather than once, because the default folder is an ordinary
+    // folder the user can empty, move or partially delete between visits -
+    // and checked byte-wise (FactoryIrLibrary::isInstalledIn) rather than by
+    // existence, so a truncated file re-offers the install instead of leaving
+    // a broken cabinet in the list. It is a stat per file in the common case.
+    irBrowserPanel.setFactoryLibraryInstallOffered (
+        ! basilica::ir::FactoryIrLibrary::isInstalledIn (basilica::ir::IrLibrary::defaultDirectory(),
+                                                        nave::factoryIrAssets()));
 
     irBrowserPanel.open (slotLabel, libraryFolder);
 }
