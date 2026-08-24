@@ -5,6 +5,16 @@
     "stateVersion": 2,
     "name": "Even Blend",
     "category": "Guitar",
+    "ir": {
+        "a": {
+            "sha256": "c0c153472cd0568cb754cca7f0cc5d0f13f94e63ebd61909ccd791ce4cd59812",
+            "name": "Modelled 4x12 Ceramic Cone"
+        },
+        "b": {
+            "sha256": "a89cbc98e29378a7e7c859d0d9b2040dbe595c85e7ce5a8cb8121bbba5f1c35c",
+            "name": "Modelled 4x12 Room 1m"
+        }
+    },
     "parameters": {
         "loCut": 20.0,
         "hiCut": 20000.0,

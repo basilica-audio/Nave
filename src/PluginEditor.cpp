@@ -206,6 +206,11 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
         // themselves (ParamIDs::irLibraryFolderProperty's docs).
         audioProcessor.apvts.state.setProperty (ParamIDs::irLibraryFolderProperty,
                                                 newFolder.getFullPathName(), nullptr);
+
+        // A preset's IR reference resolves against the folder the browser is
+        // pointed at (issue #42), so the index has to follow the user's
+        // choice rather than the one that was current at construction.
+        audioProcessor.refreshIrSearchRoots();
     };
     // "Install Library" (issue #33): unpack the bundled IRs into the folder
     // the browser already scans by default, then point the browser at it.
@@ -231,6 +236,12 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
         // button, and is also what reports success: files, not a message.
         irBrowserPanel.setLibraryDirectory (destination);
         irBrowserPanel.setFactoryLibraryInstallOffered (false);
+
+        // The bundled cabinets a factory preset may reference now exist, so a
+        // preset that reported them missing a moment ago will resolve if it is
+        // loaded again - and the notice about them is stale either way.
+        audioProcessor.refreshIrSearchRoots();
+        showPresetIrNotice ({});
     };
     irBrowserPanel.onDismiss = [this]
     {
@@ -246,6 +257,36 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
     };
     addChildComponent (irBrowserPanel);
 
+    // Issue #42's non-modal notice. addChildComponent (not
+    // addAndMakeVisible): it stays hidden, and takes up none of the plate,
+    // until a preset actually reports a missing IR. Non-interactive, so it
+    // is not part of the keyboard focus order and cannot swallow a click
+    // meant for the art beneath it - but it does carry an accessible title,
+    // so a screen-reader user is told the same thing a sighted one is.
+    // componentID (the same convention scaleButton uses) lets a test find
+    // the strip without depending on its text, which is translated.
+    presetIrNoticeLabel.setComponentID ("presetIrNotice");
+    presetIrNoticeLabel.setJustificationType (juce::Justification::centred);
+    presetIrNoticeLabel.setMinimumHorizontalScale (1.0f);
+    presetIrNoticeLabel.setInterceptsMouseClicks (false, false);
+    presetIrNoticeLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+    presetIrNoticeLabel.setColour (juce::Label::backgroundColourId, juce::Colours::black.withAlpha (0.72f));
+    addChildComponent (presetIrNoticeLabel);
+
+    audioProcessor.onPresetIrNotice = [this] (const juce::String& message)
+    {
+        // PresetManager is message-thread-only by contract (see its class
+        // docs), and this callback only ever fires from inside a preset
+        // load - so there is no thread hop to make here, and the editor
+        // clears the callback in its destructor, so it cannot outlive us.
+        showPresetIrNotice (message);
+    };
+
+    // A notice raised before this editor existed (a preset recalled by the
+    // host on instantiation, or the startup default) would otherwise be
+    // silently dropped.
+    showPresetIrNotice (audioProcessor.getPresetIrNotice());
+
     setResizable (false, false);
 
     const auto storedStep = (int) audioProcessor.apvts.state.getProperty (uiScaleStepProperty, 0);
@@ -254,7 +295,18 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
 
 NaveAudioProcessorEditor::~NaveAudioProcessorEditor()
 {
+    // Before anything else: the processor outlives the editor, and the
+    // callback captures `this`.
+    audioProcessor.onPresetIrNotice = nullptr;
+
     setLookAndFeel (nullptr);
+}
+
+void NaveAudioProcessorEditor::showPresetIrNotice (const juce::String& message)
+{
+    presetIrNoticeLabel.setText (message, juce::dontSendNotification);
+    presetIrNoticeLabel.setTitle (message);
+    presetIrNoticeLabel.setVisible (message.isNotEmpty());
 }
 
 void NaveAudioProcessorEditor::configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText)
@@ -354,6 +406,11 @@ void NaveAudioProcessorEditor::refreshIrSlotLabel (IrSlot& slot, IrSlotId id, co
 
     slot.nameLabel.setText (displayText, juce::dontSendNotification);
     slot.nameLabel.setTitle (displayText);
+
+    // The user has just decided what is in this slot, which settles the
+    // question any outstanding "this preset was made with..." notice was
+    // asking (issue #42). Leaving it up would nag about a choice already made.
+    showPresetIrNotice ({});
 }
 
 void NaveAudioProcessorEditor::chooseImpulseResponseForSlot (IrSlot& slot, IrSlotId id, const juce::String& slotLabel)
@@ -532,6 +589,9 @@ void NaveAudioProcessorEditor::resized()
 
     layoutSlot (irSlotA, irBay.getX());
     layoutSlot (irSlotB, irBay.getX() + halfW);
+
+    presetIrNoticeLabel.setBounds (toPlateRect (irNoticeStrip1x));
+    presetIrNoticeLabel.setFont (juce::Font (juce::FontOptions {}.withHeight (13.0f * scale)));
 
     // The browser overlay always spans the full editor (it paints its own
     // scrim + centred panel), at every scale step.

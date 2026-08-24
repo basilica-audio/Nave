@@ -1,10 +1,15 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "ir/IrLibrary.h"
 #include "params/ParameterIds.h"
 #include "params/ParameterLayout.h"
+#include "presets/IrReference.h"
 #include "state/IrStateSerialization.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
+#include <juce_cryptography/juce_cryptography.h>
+
+#include <map>
 
 #include <BinaryData.h>
 
@@ -113,9 +118,22 @@ NaveAudioProcessor::NaveAudioProcessor()
         IrState::migrateParametersIfNeeded (apvts, declaredVersion);
     });
 
+    // Issue #42: presets may carry an OPTIONAL reference to the IR they were
+    // made with (src/presets/IrReference.h). Installed through
+    // PresetManager's generic extra-field hooks so the portable preset class
+    // never learns what an impulse response is.
+    refreshIrSearchRoots();
+
+    installPresetIrCallbacks (presetManager);
+
     // M2 default resolution: user "Default" preset > factory "Default"
     // preset > the ParameterLayout defaults apvts was just constructed
     // with above (see PresetManager::applyStartupDefault()'s docs).
+    //
+    // The factory "Default" preset carries no IR reference (it is the
+    // certified passthrough state), so the hook installed above costs this
+    // construction-time load nothing: applyPresetIrReferences() returns
+    // before touching the file system when a preset references nothing.
     presetManager.applyStartupDefault();
 }
 
@@ -460,6 +478,208 @@ juce::String NaveAudioProcessor::getCurrentIrFilePathB() const
     return apvts.state.getProperty (ParamIDs::irFilePathBProperty, juce::String()).toString();
 }
 
+const juce::AudioBuffer<float>& NaveAudioProcessor::getLoadedImpulseResponse (int slotIndex) const noexcept
+{
+    return engine.getRawImpulseResponse (slotIndex);
+}
+
+double NaveAudioProcessor::getLoadedImpulseResponseSampleRate (int slotIndex) const noexcept
+{
+    return engine.getRawImpulseResponseSampleRate (slotIndex);
+}
+
+//==============================================================================
+// Preset -> IR references (issue #42). See src/presets/IrReference.h for why
+// the identifier is a hash of the file's BYTES and never its name or id, and
+// src/ir/IrContentIndex.h for the resolution side.
+
+void NaveAudioProcessor::installPresetIrCallbacks (basilica::presets::PresetManager& manager)
+{
+    manager.setExtraFieldCallbacks (
+        [this] (juce::DynamicObject& presetObject) { capturePresetIrReferences (presetObject); },
+        [this] (const juce::var& presetObject) { applyPresetIrReferences (presetObject); });
+}
+
+std::vector<juce::File> NaveAudioProcessor::getIrSearchRoots() const
+{
+    std::vector<juce::File> searchRoots;
+
+    const auto storedFolder = apvts.state.getProperty (ParamIDs::irLibraryFolderProperty, juce::String()).toString();
+
+    // The folder the browser is actually pointed at comes first: a user who
+    // has chosen their own library expects presets to resolve against it.
+    if (storedFolder.isNotEmpty())
+        searchRoots.push_back (juce::File (storedFolder));
+
+    // ...then the out-of-the-box location, which is where the browser's
+    // "Install Library" button writes Nave's bundled cabinets. Included
+    // unconditionally so a factory preset's reference resolves for a user who
+    // installed the library and then pointed the browser somewhere else.
+    searchRoots.push_back (basilica::ir::IrLibrary::defaultDirectory());
+
+    return searchRoots;
+}
+
+void NaveAudioProcessor::refreshIrSearchRoots()
+{
+    irContentIndex.setSearchRoots (getIrSearchRoots());
+}
+
+juce::String NaveAudioProcessor::bundledDisplayNameForContentHash (const juce::String& contentHash) const
+{
+    // Built once, from the bytes actually embedded in this binary rather than
+    // from resources/irs/manifest.json, so the hint can never claim an IR is
+    // "part of the bundled library" on the strength of a manifest entry whose
+    // audio did not ship. Nine small files; the map is tiny and immutable.
+    static const std::map<juce::String, juce::String> bundledDigests = []
+    {
+        std::map<juce::String, juce::String> digests;
+
+        for (const auto& asset : nave::factoryIrAssets())
+        {
+            const juce::String fileName (asset.fileName);
+
+            if (! fileName.endsWithIgnoreCase (".wav") || asset.data == nullptr || asset.dataSize <= 0)
+                continue;
+
+            const auto hash = juce::SHA256 (asset.data, static_cast<size_t> (asset.dataSize)).toHexString().toLowerCase();
+            digests[hash] = basilica::presets::displayNameForIrFileName (fileName);
+        }
+
+        return digests;
+    }();
+
+    const auto found = bundledDigests.find (contentHash.toLowerCase());
+    return found == bundledDigests.end() ? juce::String() : found->second;
+}
+
+void NaveAudioProcessor::capturePresetIrReferences (juce::DynamicObject& presetObject)
+{
+    const auto referenceFor = [] (const juce::String& path)
+    {
+        basilica::presets::IrReference reference;
+
+        if (path.isEmpty())
+            return reference; // the default delta IR: nothing to reference
+
+        const juce::File file (path);
+        reference.contentHash = basilica::presets::contentHashOfFile (file);
+
+        if (reference.isPresent())
+            reference.displayName = basilica::presets::displayNameForIrFile (file);
+
+        return reference;
+    };
+
+    basilica::presets::PresetIrReferences references;
+    references.slotA = referenceFor (getCurrentIrFilePath());
+    references.slotB = referenceFor (getCurrentIrFilePathB());
+
+    // Writes nothing at all when neither slot holds a user IR, so a preset
+    // saved from the default state is byte-identical to a pre-#42 one.
+    basilica::presets::writeIrReferences (presetObject, references);
+}
+
+void NaveAudioProcessor::applyPresetIrReferences (const juce::var& presetObject)
+{
+    // Every preset load replaces the previous one's notice - including a load
+    // that has nothing to report, which clears it. The listener is told on
+    // EVERY load, empty string included: a listener that only ever heard about
+    // misses would keep showing a message about a preset the user has since
+    // moved on from. Hence the single publishing exit below rather than an
+    // early return.
+    const auto previousNotice = presetIrNotice;
+    presetIrNotice.clear();
+
+    const auto publish = [this, &previousNotice]
+    {
+        if (onPresetIrNotice != nullptr && presetIrNotice != previousNotice)
+            onPresetIrNotice (presetIrNotice);
+    };
+
+    const auto references = basilica::presets::readIrReferences (presetObject);
+
+    if (! references.isPresent())
+    {
+        // The overwhelmingly common case, and it costs no file I/O.
+        publish();
+        return;
+    }
+
+    refreshIrSearchRoots();
+
+    juce::StringArray missingDescriptions;
+    bool anyMissingIsBundled = false;
+
+    const auto applySlot = [&] (const basilica::presets::IrReference& reference,
+                                const juce::String& slotLabel,
+                                const juce::String& currentPath,
+                                bool isSlotA)
+    {
+        if (! reference.isPresent())
+            return;
+
+        // Already exactly these bytes: leave the convolver alone rather than
+        // reloading it, so recalling a preset for the cab that is already up
+        // costs nothing and cannot glitch.
+        if (currentPath.isNotEmpty()
+            && basilica::presets::contentHashOfFile (juce::File (currentPath)) == reference.contentHash)
+            return;
+
+        const auto resolved = irContentIndex.findByContentHash (reference.contentHash);
+
+        if (resolved.existsAsFile())
+        {
+            if (isSlotA ? loadImpulseResponseFromFile (resolved) : loadImpulseResponseFromFileB (resolved))
+                return;
+        }
+
+        // MISS. Decision D2: the parameters have already been applied, the
+        // slot keeps whatever was in it, and NOTHING is substituted - a
+        // different cabinet loaded here would be the silent-wrong-sound
+        // failure the content hash exists to prevent. All that is left to do
+        // is say what was expected.
+        const auto bundledName = bundledDisplayNameForContentHash (reference.contentHash);
+
+        if (bundledName.isNotEmpty())
+            anyMissingIsBundled = true;
+
+        auto expectedName = reference.displayName.trim();
+
+        if (expectedName.isEmpty())
+            expectedName = bundledName;
+
+        if (expectedName.isEmpty())
+            expectedName = reference.contentHash.substring (0, 12); // a preset that named nothing
+
+        missingDescriptions.add ("\"" + expectedName + "\" (" + slotLabel + ")");
+    };
+
+    applySlot (references.slotA, TRANS ("IR A"), getCurrentIrFilePath(), true);
+    applySlot (references.slotB, TRANS ("IR B"), getCurrentIrFilePathB(), false);
+
+    if (missingDescriptions.isEmpty())
+    {
+        publish();
+        return;
+    }
+
+    const auto separator = TRANS (" and ");
+    const auto joined = missingDescriptions.joinIntoString (separator);
+
+    presetIrNotice = (missingDescriptions.size() == 1
+                          ? TRANS ("This preset was made with NAMES, which is not in your IR library.")
+                          : TRANS ("This preset was made with NAMES, which are not in your IR library."))
+                          .replace ("NAMES", joined)
+                      + " "
+                      + TRANS ("Its settings were loaded and the IR slots were left as they were.");
+
+    if (anyMissingIsBundled)
+        presetIrNotice += " " + TRANS ("Use Browse... and then Install Library to add Nave's bundled cabinets.");
+
+    publish();
+}
+
 //==============================================================================
 void NaveAudioProcessor::embedImpulseResponsesIntoState()
 {
@@ -526,6 +746,11 @@ void NaveAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
     reconfigureEngineFromParameters();
 
     restoreImpulseResponsesFromState();
+
+    // The restored session carries the user's IR library folder
+    // (ParamIDs::irLibraryFolderProperty), which is where a preset loaded
+    // later in this session will look for its referenced IR.
+    refreshIrSearchRoots();
 }
 
 void NaveAudioProcessor::restoreImpulseResponsesFromState()

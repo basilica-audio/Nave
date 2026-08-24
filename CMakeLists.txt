@@ -148,6 +148,11 @@ target_compile_definitions(SharedCode INTERFACE
 target_link_libraries(SharedCode INTERFACE
     juce::juce_audio_formats
     juce::juce_audio_utils
+    # juce::SHA256, for the preset -> IR content-hash reference (issue #42,
+    # src/presets/IrReference.h). juce_cryptography depends only on juce_core
+    # and links nothing external, so this adds no third-party surface - and a
+    # hand-rolled SHA-256 to avoid the module would be a worse trade.
+    juce::juce_cryptography
     juce::juce_dsp
     juce::juce_gui_basics
     juce::juce_recommended_config_flags

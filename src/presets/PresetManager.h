@@ -68,6 +68,33 @@ namespace basilica::presets
         // its setStateInformation() applies (see src/state/IrStateSerialization.h).
         std::function<void (int)> migrateFromSchemaVersion;
 
+        // Optional hooks for plugin-specific data that is NOT a parameter
+        // value and therefore has no place in the "parameters" object -
+        // Nave uses them for the optional IR reference described in
+        // src/presets/IrReference.h (issue #42).
+        //
+        // These are callbacks rather than a field this class knows about
+        // because PresetManager is copied verbatim into sibling plugins (see
+        // the file-level note): it has to be able to carry a plugin's extra
+        // field without ever learning what the field means.
+        //
+        // captureExtraFields is handed the preset document being built,
+        // after its standard keys are set, and may add top-level properties
+        // of its own. Adding none is normal, and leaves the written file
+        // byte-identical to one produced by a build with no hook installed.
+        //
+        // applyExtraFields is handed the whole parsed preset document after
+        // its parameter values have been applied and after any schema
+        // migration has run, so the hook sees a fully settled plugin state.
+        // It is called for EVERY preset load, including presets carrying no
+        // extra fields at all, so a plugin can also use it to clear state
+        // left behind by the previously loaded preset.
+        //
+        // Both are message-thread-only, like every other public operation on
+        // this class.
+        std::function<void (juce::DynamicObject&)> captureExtraFields;
+        std::function<void (const juce::var&)> applyExtraFields;
+
         // Optional override for getUserPresetsDirectory(): if this is a
         // non-null juce::File, it is returned verbatim instead of computing
         // the platform-standard location. Exists purely for test isolation
@@ -123,6 +150,19 @@ namespace basilica::presets
         void setSchemaMigrationCallback (std::function<void (int)> callback)
         {
             config.migrateFromSchemaVersion = std::move (callback);
+        }
+
+        // Installs (or replaces) the two hooks described on
+        // PresetManagerConfig::captureExtraFields/applyExtraFields. A setter
+        // for the same reason setSchemaMigrationCallback() is one: the
+        // callbacks need to capture the owning processor, which does not
+        // exist yet when the config struct is built. Message thread only,
+        // and in practice only ever called once at construction.
+        void setExtraFieldCallbacks (std::function<void (juce::DynamicObject&)> capture,
+                                      std::function<void (const juce::var&)> apply)
+        {
+            config.captureExtraFields = std::move (capture);
+            config.applyExtraFields = std::move (apply);
         }
 
         //======================================================================

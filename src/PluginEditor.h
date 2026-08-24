@@ -102,6 +102,16 @@ private:
     void refreshIrSlotLabel (IrSlot& slot, IrSlotId id, const juce::String& slotLabel);
     void chooseImpulseResponseForSlot (IrSlot& slot, IrSlotId id, const juce::String& slotLabel);
     void openIrBrowserForSlot (IrSlotId id, const juce::String& slotLabel);
+
+    // Issue #42's non-modal notice: a preset that referenced an IR the user
+    // does not have loaded its parameters anyway and left the IR slots alone,
+    // and this says so. Passing an empty string hides the strip again, which
+    // is what every successful preset load and every manual IR change does.
+    //
+    // Deliberately a plain, non-interactive juce::Label rather than a dialog:
+    // the preset DID open, so there is nothing to confirm and nothing to
+    // block on - a modal here would be an error report for a non-error.
+    void showPresetIrNotice (const juce::String& message);
     IrSlot& slotFor (IrSlotId id) noexcept;
     void applyScaleStep (int newStepIndex);
     void cycleScale();
@@ -132,6 +142,7 @@ private:
     juce::String irBrowserTargetLabel { "IR A" };
 
     juce::Label titleLabel;
+    juce::Label presetIrNoticeLabel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NaveAudioProcessorEditor)
 };

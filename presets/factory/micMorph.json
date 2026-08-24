@@ -5,6 +5,16 @@
     "stateVersion": 2,
     "name": "Mic Morph",
     "category": "Guitar",
+    "ir": {
+        "a": {
+            "sha256": "c0c153472cd0568cb754cca7f0cc5d0f13f94e63ebd61909ccd791ce4cd59812",
+            "name": "Modelled 4x12 Ceramic Cone"
+        },
+        "b": {
+            "sha256": "f5677e4a2d6f0468b3c4ffd2224f22d2e3355cb49a4edee513d486eee1ceec15",
+            "name": "Modelled 4x12 Ceramic Edge"
+        }
+    },
     "parameters": {
         "loCut": 20.0,
         "hiCut": 20000.0,
