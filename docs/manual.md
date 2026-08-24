@@ -44,10 +44,17 @@ Nave has **two independent IR slots**, A and B:
 
 ### The bundled library
 
-Nave ships **nine impulse responses** in the release archive, in a folder called
-`Impulse Responses`. Copy that folder to `Music/Nave/` under your user folder
-(`~/Music/Nave/Impulse Responses` on macOS, `%USERPROFILE%\Music\Nave\Impulse Responses`
-on Windows) and the IR browser finds them without being pointed anywhere.
+Nave ships **nine impulse responses** inside the plugin itself. Open the IR
+browser on either slot and, if they are not on disk yet, it shows an **Install
+Library** button: one click writes them to `Music/Nave/Impulse Responses` under
+your user folder (`~/Music/Nave/Impulse Responses` on macOS,
+`%USERPROFILE%\Music\Nave\Impulse Responses` on Windows) and lists them
+immediately. Nothing is written until you press it, and pressing it again on a
+library that is already there does nothing — except quietly replace any file
+that has gone missing or been damaged.
+
+The same nine files are also in the release archive, in a folder called
+`Impulse Responses`, if you would rather copy them somewhere else by hand.
 
 **They are models, not recordings.** Every one is computed from an analytical
 cabinet model — driver and box alignment, cone-breakup modes, voice-coil
@@ -90,7 +97,8 @@ Each slot also has a **Browse...** button that opens the **IR browser**: an over
 - **Selecting a row loads it into the slot immediately** — click through the list, or focus it and step with the arrow keys, and you are auditioning cabs in real time. Note that (as with any IR load outside Morph) each swap is a hard engine reload, so audition while the track is looping quietly, not mid-take.
 - **Return or double-click** loads the selected IR and closes the browser; **Escape** or **Close** just closes it (the last auditioned IR stays loaded).
 - The **filter box** narrows the list by name (case-insensitive substring, matched against the path relative to the library folder).
-- **Folder...** points the browser at your own IR library directory. The choice is saved with the plugin state. Out of the box it looks in `Music/Nave/Impulse Responses` under your user folder — which is where [the bundled library](#the-bundled-library) is meant to go.
+- **Folder...** points the browser at your own IR library directory. The choice is saved with the plugin state. Out of the box it looks in `Music/Nave/Impulse Responses` under your user folder — which is where **Install Library** puts [the bundled library](#the-bundled-library).
+- **Install Library** appears only while the bundled library is not already sitting complete in that default folder, so once it is installed the button stops taking up space.
 - The folder scan runs in the background (a huge library or a network drive never freezes the UI) and is capped at 2000 files.
 
 The browser and the per-slot **Load IR...** file dialog load through exactly the same path — use whichever fits the moment.
