@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The suite now presents itself as Basilica Audio in every host.** `COMPANY_NAME` moves from
+  `Yves Vogl` to `Basilica Audio`, so Nave files under the brand in Logic's plugin manager,
+  Cubase's vendor column and Reaper's FX browser instead of under a person's name. **Plugin
+  identity is untouched** and no session is affected: the VST3 class ID derives from
+  `PLUGIN_MANUFACTURER_CODE` + `PLUGIN_CODE` alone (JUCE 8.0.14, `juce_VST3ModuleInfo.h`'s
+  `VST3Interface::jucePluginId`) and the Audio Unit triple stays `(aufx, <PLUGIN_CODE>, Yvsv)` -
+  both diffed on a real build before and after the change. The bundle ID stays
+  `com.yvesvogl.nave` on purpose, because changing it is what would break existing projects, and
+  `COMPANY_COPYRIGHT` still names the copyright holder rather than the trading name. See
+  [`docs/branding.md`](docs/branding.md) and basilica-audio/.github ADR 0001.
+- **User presets now live under `Basilica Audio`, and the ones you already saved come with them.**
+  The folder moves to `~/Library/Audio/Presets/Basilica Audio/Nave/` (macOS) and
+  `%APPDATA%\Basilica Audio\Nave\Presets\` (Windows). On first launch `PresetManager` copies
+  every preset out of the old `Yves Vogl` folder into the new one. It **copies rather than moves**,
+  so an older build - or a downgrade - still finds its presets where it left them, and it never
+  overwrites a file already present under the new name. Nothing is deleted, ever.
 - **Plugin metadata now carries the vendor URL, the copyright string, a real description and
   the VST3 sub-category.** `COMPANY_WEBSITE`, `COMPANY_COPYRIGHT` and `DESCRIPTION` were never
   set, so a shipped bundle carried an empty `NSHumanReadableCopyright`, an empty VST3 vendor
@@ -22,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Release notes are the changelog again, not a list of PR titles.** `release.yml` now builds the
+  release body from this file's section for the tag being released, via the suite-wide
+  `basilica-audio/.github/release-notes` action, and appends what a downloader actually needs: what
+  each archive contains, the signing status per platform stated accurately (macOS signed, notarised
+  and stapled; Windows **not** code-signed, so SmartScreen will warn), the install paths, the AU
+  rescan hint, and links to the manual and the product page. A tag whose version has no section in
+  this file now fails the release job rather than publishing an empty page.
 - **The manual's caveat list no longer says the binaries are unsigned.** macOS release
   bundles are Developer-ID-signed, notarised and stapled; Windows is not yet
   Authenticode-signed, which is what the caveat now says.

@@ -23,7 +23,7 @@ wiring it needs.
 ## The per-plugin config surface
 
 Everything PresetManager needs beyond generic file-format/dirty-tracking/
-ordering logic is exactly these four fields (`PresetManagerConfig` in
+ordering logic is exactly these five fields (`PresetManagerConfig` in
 `PresetManager.h`):
 
 ```cpp
@@ -31,9 +31,11 @@ struct PresetManagerConfig
 {
     juce::String pluginId;             // e.g. "com.yvesvogl.overture" - must match BUNDLE_ID
     juce::String pluginName;           // e.g. "Overture" - JucePlugin_Name
-    juce::String manufacturerName;     // "Yves Vogl" for every suite plugin
-    juce::String pluginVersion;        // JucePlugin_VersionString
-    juce::File userPresetsDirectoryOverrideForTests; // leave default-constructed in production
+    juce::String manufacturerName;       // "Basilica Audio" for every suite plugin
+    juce::String legacyManufacturerName; // "Yves Vogl" - the pre-rename folder to adopt from
+    juce::String pluginVersion;          // JucePlugin_VersionString
+    juce::File userPresetsDirectoryOverrideForTests;       // leave default-constructed in production
+    juce::File legacyUserPresetsDirectoryOverrideForTests; // ditto
 };
 ```
 
@@ -133,9 +135,16 @@ preset directory on the machine running the tests. Production code (the
 `PluginProcessor.cpp` helpers above) always leaves this field
 default-constructed (empty), so real plugin instances use the genuine
 platform-standard location
-(`~/Library/Audio/Presets/Yves Vogl/<Plugin>/` on macOS,
-`%APPDATA%/Yves Vogl/<Plugin>/Presets/` on Windows). Copy this pattern into
+(`~/Library/Audio/Presets/Basilica Audio/<Plugin>/` on macOS,
+`%APPDATA%/Basilica Audio/<Plugin>/Presets/` on Windows). Copy this pattern into
 every sibling's own preset tests.
+
+`legacyUserPresetsDirectoryOverrideForTests` is its counterpart for the
+pre-rename folder, and the pair is deliberately asymmetric: overriding the
+current directory *without* naming a legacy one disables the migration rather
+than letting it reach the real per-user folder. A test that redirected only the
+current directory would otherwise read - and copy from - the presets of whoever
+is running it.
 
 ## What Nave's v0.2.0 pass did *not* build
 
