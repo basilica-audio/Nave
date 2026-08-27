@@ -354,6 +354,16 @@ TEST_CASE ("Bundled IR curation: the bundle costs what the documentation says it
     // printed in that same file's Footprint table. The two have to be updated
     // together or the documentation is wrong the moment it is edited. The
     // failure message prints the new figure.
+    //
+    // IT IS ALSO WHY .gitattributes MARKS THE EMBEDDED ASSETS `-text`. This
+    // assertion first failed on Windows CI at 34,919 provenance bytes against
+    // macOS's 34,137 - Git's default text=auto had rewritten the three
+    // embedded provenance files to CRLF in the working tree, so the same
+    // commit was shipping different bytes depending on who built it. The
+    // .wav cabinets were never affected (they contain NUL bytes, so Git
+    // treats them as binary), which is why nothing about the preset -> IR
+    // content hashes ever depended on this. A platform-dependent figure here
+    // is a real defect, not a tolerance to widen.
 
     constexpr int expectedAudioBytes = 98700;
     constexpr int expectedProvenanceBytes = 34137;

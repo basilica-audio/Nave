@@ -1,0 +1,31 @@
+# Default: normalise to LF in the repository, native line endings in the
+# working tree. Overridden below for everything that ships inside the binary.
+* text=auto
+
+# ==============================================================================
+# Files that juce_add_binary_data() compiles INTO the plugin binary must have
+# identical bytes on every platform.
+#
+# WHY THIS EXISTS. Git's default `text=auto` rewrites LF to CRLF in the working
+# tree on Windows. Every embedded TEXT asset is therefore one byte per line
+# larger in a Windows build than in a macOS one, so the same commit ships a
+# different LICENSES.md, a different manifest.json and different preset JSON
+# depending on who built it.
+#
+# Nothing functional broke - the .wav cabinets contain NUL bytes, so Git never
+# converted them, which is why the preset -> IR content hashes (see
+# src/presets/IrReference.h) were never affected - but "the provenance embedded
+# in the binary is the provenance in the repository" is a claim
+# resources/irs/LICENSES.md makes, and it was not true on Windows.
+#
+# Caught by tests/BundledIrCurationTests.cpp's footprint assertion, which
+# measures the bytes actually compiled in: 34,919 on Windows against 34,137 on
+# macOS - exactly the 782 line endings in the three embedded provenance files.
+#
+# `-text` means "never convert this file's line endings, in either direction",
+# so the working tree gets the committed bytes verbatim everywhere. Rules here
+# are LAST because git-check-attr resolves by last match.
+# ==============================================================================
+presets/factory/*.json   -text
+resources/**             -text
+docs/assets/icon-256.png -text
