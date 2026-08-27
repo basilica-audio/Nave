@@ -73,6 +73,14 @@ jobs:
           python3 tools/ir-synth/verify_irs.py resources/irs \
             --expect-manifest resources/irs/manifest.json \
             --min-files 9
+          # And measures the same nine as a SET (issue #47): level match through
+          # the engine's own gain modes, polarity consistency, whether each
+          # cone/edge/room pair still differs in the direction its name claims,
+          # whether an aligned blend of a pair sums coherently, and whether
+          # sealed/ported/open-back stay distinguishable on the roll-off order.
+          # Those are properties of the library rather than of any one file, so
+          # verify_irs.py cannot see them. Standard library only, likewise.
+          python3 tools/ir-synth/measure_irs.py resources/irs --check
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'

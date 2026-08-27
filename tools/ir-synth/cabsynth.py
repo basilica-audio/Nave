@@ -674,7 +674,7 @@ _register({
     "display_name": "Modelled 4x12 Room 1m",
     "file_name": "modelled_4x12_ceramic_room.wav",
     "family": "guitar",
-    "description": "Sealed 4x12 at one metre in a small tracking room: no proximity rise, four early reflections and a short diffuse tail.",
+    "description": "Sealed 4x12 at one metre in a small tracking room: no proximity rise in the direct field, four early reflections that put a comparable low-mid lift back, and a short diffuse tail.",
     "sample_rate": 48000,
     "length": 8192,
     "fade_samples": 2048,
