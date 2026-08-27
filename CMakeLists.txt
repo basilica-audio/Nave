@@ -226,6 +226,12 @@ target_compile_definitions(Tests PRIVATE
     # is a directory scanner - so tests/FactoryIrLibraryTests.cpp reads the
     # assets from the source tree, the same bytes the release archive stages.
     NAVE_IR_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/resources/irs"
+    # Absolute path to src/, so tests/I18nCoverageTests.cpp (issue #49) can
+    # extract the TRANS() string table from the same sources this binary was
+    # compiled from and hold resources/i18n/de.txt (read back from its
+    # embedded BinaryData bytes - the shipped copy, not the intent) to full
+    # coverage of it.
+    NAVE_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 set_target_properties(Tests PROPERTIES XCODE_GENERATE_SCHEME ON)
