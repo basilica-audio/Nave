@@ -11,6 +11,24 @@ namespace basilica::ir::IrLibrary
                     .getChildFile ("Impulse Responses");
     }
 
+    juce::File bundledCacheDirectory()
+    {
+        auto root = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+
+       #if JUCE_MAC
+        // JUCE 8.0.14 maps userApplicationDataDirectory to "~/Library" on
+        // macOS (juce_Files_mac.mm), not to "~/Library/Application Support",
+        // so the platform's actual convention has to be spelled out here.
+        // On Windows the same enum already yields %APPDATA%, and on Linux
+        // ~/.config, both of which are the right place as they stand.
+        root = root.getChildFile ("Application Support");
+       #endif
+
+        return root.getChildFile ("Basilica Audio")
+                   .getChildFile ("Nave")
+                   .getChildFile ("Bundled Impulse Responses");
+    }
+
     bool isImpulseResponseFile (const juce::File& file)
     {
         // hasFileExtension() takes a semicolon-separated list and matches

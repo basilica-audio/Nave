@@ -117,11 +117,26 @@ namespace
         };
     }
 
+    // A single scratch location standing in for
+    // IrLibrary::bundledCacheDirectory() (issue #45) for the whole test run,
+    // deleted when the binary exits. No test may write into the user's real
+    // ~/Library|%APPDATA%, and since #45 any preset naming one of Nave's own
+    // digests would - so the redirect belongs in the shared helper rather
+    // than being remembered per test.
+    const juce::File& sharedBundledIrCache()
+    {
+        static const ScopedTestDirectory cache ("shared-bundled-cache");
+        return cache.dir;
+    }
+
     // Points the processor's reference resolution at a scratch library folder,
-    // the same way a user choosing a folder in the IR browser does.
+    // the same way a user choosing a folder in the IR browser does. A test
+    // that cares WHERE the embedded copy lands overrides the cache again
+    // after this call.
     void useIrLibraryFolder (NaveAudioProcessor& processor, const juce::File& folder)
     {
         processor.apvts.state.setProperty (ParamIDs::irLibraryFolderProperty, folder.getFullPathName(), nullptr);
+        processor.setBundledIrCacheDirectoryForTests (sharedBundledIrCache());
         processor.refreshIrSearchRoots();
     }
 
@@ -839,19 +854,30 @@ TEST_CASE ("Factory presets: the referenced ones load both slots from the bundle
     }
 }
 
-TEST_CASE ("Factory presets: with the bundled library not installed, they still open and say what is missing",
+TEST_CASE ("Factory presets: with nothing on disk, they resolve from the embedded bundle",
            "[presets][ir][factory][content]")
 {
-    // The out-of-the-box case for a user who has not pressed Install Library:
-    // the referenced cabinets are nowhere on disk. Decision D2 says this must
-    // still be a working preset load.
+    // SUPERSEDED BY ISSUE #45. Until then this case asserted the opposite -
+    // that a first-run user meets a notice on a FACTORY preset naming content
+    // that is already inside the binary they just installed. #45 decided the
+    // embedded bytes are a resolution source, so the preset now loads its
+    // cabinets with nothing on disk and nothing pressed.
+    //
+    // What did NOT change is decision D2: nothing is substituted, and a
+    // reference nobody holds still degrades to an untouched slot plus a
+    // notice - see tests/BundledIrResolutionTests.cpp, which owns the new
+    // behaviour in full.
     NaveAudioProcessor processor;
     processor.prepareToPlay (48000.0, 512);
 
     ScopedTestDirectory presetDir ("uninstalled-presets");
     ScopedTestDirectory emptyLibrary ("uninstalled-library");
+    ScopedTestDirectory bundledCache ("uninstalled-cache");
 
     useIrLibraryFolder (processor, emptyLibrary.dir);
+
+    // Never the real user location, which a test must not write into.
+    processor.setBundledIrCacheDirectoryForTests (bundledCache.dir);
 
     PresetManager manager (processor.apvts, makeIsolatedConfig (presetDir.dir), factoryPresetAssets());
     processor.installPresetIrCallbacks (manager);
@@ -867,19 +893,20 @@ TEST_CASE ("Factory presets: with the bundled library not installed, they still 
     REQUIRE (irBlend != nullptr);
     CHECK (irBlend->convertFrom0to1 (irBlend->getValue()) == Catch::Approx (35.0f).margin (0.05));
 
-    // Slots untouched (still the default delta IR), nothing substituted.
-    CHECK (processor.getCurrentIrFilePath().isEmpty());
-    CHECK (processor.getCurrentIrFilePathB().isEmpty());
+    // Both cabinets are up, out of the box, and there is nothing to say.
+    const juce::File slotA (processor.getCurrentIrFilePath());
+    const juce::File slotB (processor.getCurrentIrFilePathB());
+
+    REQUIRE (slotA.existsAsFile());
+    REQUIRE (slotB.existsAsFile());
+    CHECK (slotA.isAChildOf (bundledCache.dir));
+    CHECK (slotB.isAChildOf (bundledCache.dir));
+    CHECK (slotA.getFileName() == "modelled_4x12_ceramic_cone.wav");
+    CHECK (slotB.getFileName() == "modelled_4x12_ceramic_edge.wav");
 
     const auto notice = processor.getPresetIrNotice();
     INFO ("notice: " << notice.toStdString());
-    CHECK (notice.isNotEmpty());
-    CHECK (notice.contains ("Modelled 4x12 Ceramic Cone"));
-    CHECK (notice.contains ("Modelled 4x12 Ceramic Edge"));
-
-    // Because the missing IRs ARE Nave's own, the notice has to say how to
-    // get them rather than leaving the user at a dead end.
-    CHECK (notice.contains ("Install Library"));
+    CHECK (notice.isEmpty());
 }
 
 //==============================================================================
