@@ -110,18 +110,22 @@ const std::vector<basilica::ir::FactoryIrAsset>& nave::factoryIrAssets()
 {
     static const std::vector<basilica::ir::FactoryIrAsset> assets
     {
-        // Guitar
-        { "modelled_4x12_ceramic_cone.wav", BinaryData::modelled_4x12_ceramic_cone_wav, BinaryData::modelled_4x12_ceramic_cone_wavSize },
-        { "modelled_4x12_ceramic_edge.wav", BinaryData::modelled_4x12_ceramic_edge_wav, BinaryData::modelled_4x12_ceramic_edge_wavSize },
-        { "modelled_4x12_ceramic_room.wav", BinaryData::modelled_4x12_ceramic_room_wav, BinaryData::modelled_4x12_ceramic_room_wavSize },
-        { "modelled_2x12_alnico_cone.wav",  BinaryData::modelled_2x12_alnico_cone_wav,  BinaryData::modelled_2x12_alnico_cone_wavSize },
-        { "modelled_1x12_combo_cone.wav",   BinaryData::modelled_1x12_combo_cone_wav,   BinaryData::modelled_1x12_combo_cone_wavSize },
+        // Guitar. The fourth field is the cabinet's stable id (issue #33),
+        // the same string resources/irs/manifest.json records for that file -
+        // identity, never a resolution key. See FactoryIrAsset::stableId and
+        // docs/bundled-ir-library.md.
+        { "modelled_4x12_ceramic_cone.wav", BinaryData::modelled_4x12_ceramic_cone_wav, BinaryData::modelled_4x12_ceramic_cone_wavSize, "guitar-412-cone" },
+        { "modelled_4x12_ceramic_edge.wav", BinaryData::modelled_4x12_ceramic_edge_wav, BinaryData::modelled_4x12_ceramic_edge_wavSize, "guitar-412-edge" },
+        { "modelled_4x12_ceramic_room.wav", BinaryData::modelled_4x12_ceramic_room_wav, BinaryData::modelled_4x12_ceramic_room_wavSize, "guitar-412-room" },
+        { "modelled_2x12_alnico_cone.wav",  BinaryData::modelled_2x12_alnico_cone_wav,  BinaryData::modelled_2x12_alnico_cone_wavSize,  "guitar-212-alnico" },
+        { "modelled_1x12_combo_cone.wav",   BinaryData::modelled_1x12_combo_cone_wav,   BinaryData::modelled_1x12_combo_cone_wavSize,   "guitar-112-combo" },
 
-        // Bass
-        { "modelled_8x10_cone.wav",         BinaryData::modelled_8x10_cone_wav,         BinaryData::modelled_8x10_cone_wavSize },
-        { "modelled_8x10_edge.wav",         BinaryData::modelled_8x10_edge_wav,         BinaryData::modelled_8x10_edge_wavSize },
-        { "modelled_1x15_vintage.wav",      BinaryData::modelled_1x15_vintage_wav,      BinaryData::modelled_1x15_vintage_wavSize },
-        { "modelled_4x10_horn.wav",         BinaryData::modelled_4x10_horn_wav,         BinaryData::modelled_4x10_horn_wavSize },
+        // Bass. Byte-identical to the four Crypta bundles, generated from the
+        // same script with the same model ids - so the ids match there too.
+        { "modelled_8x10_cone.wav",         BinaryData::modelled_8x10_cone_wav,         BinaryData::modelled_8x10_cone_wavSize,         "bass-810-cone" },
+        { "modelled_8x10_edge.wav",         BinaryData::modelled_8x10_edge_wav,         BinaryData::modelled_8x10_edge_wavSize,         "bass-810-edge" },
+        { "modelled_1x15_vintage.wav",      BinaryData::modelled_1x15_vintage_wav,      BinaryData::modelled_1x15_vintage_wavSize,      "bass-115-vintage" },
+        { "modelled_4x10_horn.wav",         BinaryData::modelled_4x10_horn_wav,         BinaryData::modelled_4x10_horn_wavSize,         "bass-410-horn" },
 
         // Provenance
         { "LICENSES.md",                    BinaryData::LICENSES_md,                    BinaryData::LICENSES_mdSize },

@@ -172,13 +172,62 @@ scientific stack to reproduce its output is a weaker reproducibility claim than
 one that does not. `python3 tools/ir-synth/cabsynth.py --list` prints the model
 table.
 
+## Footprint
+
+**132,837 bytes — 129.7 KiB — of embedded assets per architecture slice.**
+
+| | bytes |
+|---|---|
+| nine `.wav` cabinets | 98,700 |
+| `LICENSES.md` + `CC0-1.0.txt` + `manifest.json` | 34,137 |
+| **total embedded** | **132,837** |
+
+The provenance files are embedded, not just committed, because the licensing bar
+is a licence committed *alongside* the audio — an installed copy that left the
+provenance behind in this repository would not meet the bar it was written for.
+`INSTALL.txt` is staged into the release archive only.
+
+`tests/BundledIrCurationTests.cpp` asserts this figure against the bytes actually
+compiled into the binary, so it cannot drift away from the documentation.
+
+## Stability across releases
+
+Presets reference an IR by a hash of its **bytes** (`src/presets/IrReference.h`),
+which fixes what may and may not change about a shipped file.
+
+* **Rename freely.** The digest does not change, so no preset notices. The
+  `id` column below (`guitar-412-cone`) is the stable handle for talking about a
+  cabinet across a rename — carried in code as `FactoryIrAsset::stableId` and in
+  `manifest.json` as `id`. It is **never** a resolution key: an identity-based
+  lookup would silently follow a retuned model, which is the exact failure a byte
+  hash exists to prevent.
+* **Never retune in place.** Changing a shipped model's voicing changes its
+  bytes, and every preset referencing it would miss. A retune ships as a **new
+  id and a new file**; the old file stays.
+* **Removal is a breaking change** for presets and belongs in a major version.
+* **An id, once shipped, is permanent.** `tests/BundledIrCurationTests.cpp`
+  carries the nine ids as a literal list, so removing or renaming one fails the
+  build.
+
+The rationale, and the membership rationale for the set as a whole, is
+[`docs/adr/0004-bundled-ir-library-curation.md`](../../docs/adr/0004-bundled-ir-library-curation.md).
+
 ## Adding to the library
 
 1. Add the model to `tools/ir-synth/cabsynth.py` and re-run it, or verify a
    third-party asset's licence **at the source** and archive the evidence — the
-   licence page itself, not a third party's description of it.
-2. Re-run `verify_irs.py`; it fails the build on a clipped, DC-offset,
+   licence page itself, not a third party's description of it. An asset whose
+   provenance cannot be established does not ship, whatever it sounds like.
+2. Give it a **new, permanent `id`** in `manifest.json`, following the existing
+   `family-cab-position` shape. Never reuse a retired one.
+3. Re-run `verify_irs.py`; it fails the build on a clipped, DC-offset,
    mis-normalised or undocumented asset.
-3. Add a row and a description to this file.
-4. If it is generated, keep the `modelled_` prefix. If it is not, it must not
+4. Register it in `juce_add_binary_data()` in `CMakeLists.txt` and in
+   `nave::factoryIrAssets()` in `src/PluginEditor.cpp`, **with its id**. The
+   curation tests fail on an embedded cabinet that has no id, on an id that does
+   not match the manifest, and on a duplicate.
+5. Add a row and a description to this file, add the id to the pinned list in
+   `tests/BundledIrCurationTests.cpp`, and update the footprint figure above (the
+   test will tell you the new number).
+6. If it is generated, keep the `modelled_` prefix. If it is not, it must not
    have one.
