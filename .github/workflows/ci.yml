@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The x86_64 format-validation step below deliberately does not run on the
+  # pull_request path (see its own comment for the cost arithmetic). This makes
+  # it runnable on demand against any branch, which is how its runtime can be
+  # measured against this repo's build - the same shape Crypta uses (see
+  # basilica-audio/Crypta PR #110).
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -23,7 +29,14 @@ jobs:
         os: [macos-latest, windows-latest]
         include:
           - os: macos-latest
-            timeout: 35
+            # 35 -> 40 with the x86_64 format-validation step (issue #52). The
+            # step runs only on push/workflow_dispatch and carries its own
+            # 15-minute step timeout; 40 keeps the job's bound meaningful
+            # rather than letting the step's bound become the real one. The
+            # identical step measured 3 min 26 s in Crypta (the same engine
+            # family and plugin surface - basilica-audio/Crypta PR #110)
+            # against a job that was otherwise well inside 35.
+            timeout: 40
           - os: windows-latest
             timeout: 35
 
@@ -83,7 +96,15 @@ jobs:
         if: runner.os == 'Windows'
         run: cmake --build build --config Release
 
-      - name: Test (macOS)
+      - name: Test (macOS, arm64 slice)
+        # ctest runs the Universal Binary, and macOS picks the slice matching
+        # the host - so this is the arm64 slice, on every GitHub-hosted macOS
+        # runner. Named accordingly (issue #52): for the whole life of this
+        # workflow it read as "the macOS tests" while executing half of what
+        # macOS ships. The x86_64 *test-suite* story is carried by
+        # windows-latest, which runs the whole suite on genuine x86_64
+        # hardware; the x86_64 *format-validation* story is the dedicated
+        # step below.
         if: runner.os == 'macOS'
         run: ctest --test-dir build --output-on-failure
 
@@ -272,6 +293,56 @@ jobs:
         run: |
           set -euo pipefail
           auval -strict -v aufx Nave Yvsv
+
+      - name: Validate the x86_64 slice (macOS)
+        # Issue #52 (the basilica-audio/Crypta#108 twin): the pluginval and
+        # auval passes above exercise the arm64 slice only, so the Intel half
+        # of the shipped Universal Binary had no format validation at all.
+        # The script asserts the x86_64 slice is present (lipo -archs), thins
+        # a COPY of each bundle to x86_64 and puts it through pluginval
+        # strictness 10 (VST3 under `arch -x86_64`, the AU via the x86_64
+        # AUHostingServiceXPC) and `auval -strict` - see its header for why
+        # thinning, not `arch`, is what selects the slice.
+        #
+        # Not on every pull request, and the reason is measured runtime rather
+        # than preference: the identical step costs 3 min 26 s in Crypta
+        # (basilica-audio/Crypta PR #110) on the most expensive minute in the
+        # fleet (macOS bills at a 10x multiplier), against a defect class -
+        # plugin-format conformance of the Intel slice - that changes far
+        # less often than the DSP does. Placing it inside this job rather
+        # than in a scheduled workflow of its own is what makes it affordable:
+        # it reuses the Universal Binary this job already built, so there is
+        # no second multi-minute build to pay for.
+        #
+        # The 15-minute step bound derives from that same measurement: 3 min
+        # 26 s observed, plus headroom for a cold Rosetta install on a fresh
+        # image, which the script performs itself when needed.
+        timeout-minutes: 15
+        if: runner.os == 'macOS' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        shell: bash
+        env:
+          VST3_PATH: ${{ steps.artefacts.outputs.vst3_path }}
+          COMPONENT_PATH: ${{ steps.artefacts.outputs.component_path }}
+        run: |
+          set -euo pipefail
+          # The build-tree artefacts, not the installed copy: these are what
+          # the release ships, and the script thins copies of them rather than
+          # touching them.
+          .github/scripts/validate-macos-x86_64-slice.sh \
+            "$VST3_PATH" \
+            "$COMPONENT_PATH" \
+            "pluginval/pluginval.app/Contents/MacOS/pluginval"
+
+      - name: Upload x86_64 validation logs (macOS)
+        # On failure only: when this step is the one that goes red, the
+        # pluginval logs are the evidence, and they are long enough that
+        # reading them out of the job log alone is awkward.
+        if: failure() && runner.os == 'macOS'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nave-x86_64-validation-logs
+          path: build/x86_64-validation/logs/**
+          if-no-files-found: ignore
 
       - name: Upload plugin artefacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
