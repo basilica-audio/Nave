@@ -1,6 +1,6 @@
 # Factory presets
 
-Eight factory presets ship with Nave v0.2.0, embedded via BinaryData from
+Ten factory presets ship with Nave, embedded via BinaryData from
 `presets/factory/*.json` (see `docs/preset-system-notes.md` for the build
 wiring). All are sourced starting points from `docs/design-brief.md`'s
 "Factory Presets" section - see that document's own Honesty section for what

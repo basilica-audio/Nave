@@ -47,6 +47,10 @@ juce_add_plugin(Nave
     PLUGIN_CODE Nave
     FORMATS AU VST3 Standalone
     PRODUCT_NAME "Nave"
+    COMPANY_WEBSITE "https://basilica-audio.github.io/website/"
+    COMPANY_COPYRIGHT "Copyright (c) 2026 Yves Vogl"
+    DESCRIPTION "Cabinet impulse-response loader with partitioned convolution"
+    VST3_CATEGORIES Fx Filter
     COPY_PLUGIN_AFTER_BUILD TRUE
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
