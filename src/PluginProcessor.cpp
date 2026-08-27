@@ -15,6 +15,40 @@
 
 #include <limits>
 
+// Issue #54: the interlock behind CMakeLists.txt's JUCE_DSP_ENABLE_SNAP_TO_ZERO=0.
+//
+// Switching juce::dsp's per-call snap-to-zero guard off is what makes this
+// plugin's render independent of the host's block size on Intel (see the
+// comment on the flag in CMakeLists.txt for the mechanism). What makes it
+// SAFE is that denormal protection does not go away with it: processBlock()
+// below opens with juce::ScopedNoDenormals, which sets the CPU's
+// flush-to-zero / denormals-are-zero modes for the whole callback and
+// restores the host's own mode on the way out.
+//
+// That is only true where ScopedNoDenormals actually does something. JUCE
+// 8.0.14 implements it under
+// `JUCE_USE_SSE_INTRINSICS || (JUCE_USE_ARM_NEON || (JUCE_64BIT && JUCE_ARM))`
+// (juce_audio_basics/buffers/juce_FloatVectorOperations.cpp) and compiles it
+// to an empty class otherwise. On any target where that condition is false,
+// turning the guard off would trade a block-size-dependence bug for a
+// denormal CPU-spike bug - so it fails the build here instead, with this
+// comment attached, rather than shipping silently unprotected.
+//
+// The condition holds for every target this plugin ships to: JUCE_INTEL
+// implies JUCE_USE_SSE_INTRINSICS (juce_audio_basics.h defines it to 1 and
+// only #undefs it when ! JUCE_INTEL), and snap-to-zero is itself
+// `#if JUCE_INTEL`, so a target that would have snapped is by construction a
+// target where FTZ|DAZ is available.
+//
+// A preprocessor check rather than a static_assert: JUCE spells these as
+// "defined to 1 or not defined at all", which #if evaluates and a C++
+// constant expression cannot.
+#if ! JUCE_DSP_ENABLE_SNAP_TO_ZERO
+ #if ! (JUCE_USE_SSE_INTRINSICS || JUCE_USE_ARM_NEON || (JUCE_64BIT && JUCE_ARM))
+  #error "JUCE_DSP_ENABLE_SNAP_TO_ZERO is off (see CMakeLists.txt / issue #54), but juce::ScopedNoDenormals compiles to nothing on this target, which would leave the DSP with no denormal protection at all. Either restore the guard for this target or provide hardware flush-to-zero another way."
+ #endif
+#endif
+
 namespace
 {
     // The small, Nave-specific config surface PresetManager needs (see
