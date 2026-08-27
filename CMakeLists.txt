@@ -168,6 +168,46 @@ target_compile_definitions(SharedCode INTERFACE
     JUCE_VST3_CAN_REPLACE_VST2=0
     # AGPLv3 usage permits disabling the splash screen.
     JUCE_DISPLAY_SPLASH_SCREEN=0
+    # Issue #54 (fleet audit classes 2/2b; the mechanism and measurements are
+    # basilica-audio/Crypta#99's): juce::dsp's per-call denormal guard makes
+    # the render depend on the host's buffer size on Intel, and it is
+    # redundant here.
+    #
+    # util::snapToZero() (JUCE 8.0.14, juce_dsp/juce_dsp.h) zeroes a filter's
+    # internal state at the END of every process() call once its magnitude
+    # falls below 1e-8. In Nave it is called once per call by every
+    # juce::dsp::IIR::Filter instance - the LoCut/HiCut cut chains (three
+    # ProcessorDuplicators each: the 12 dB/oct section and both 24 dB/oct
+    # cascade sections) and the two Distance shelving filters. The snap
+    # events therefore land on the host's block boundaries: move the
+    # boundaries and the state trajectory, and so the output, changes.
+    # JUCE_SNAP_TO_ZERO is `#if JUCE_INTEL`
+    # (juce_audio_basics/buffers/juce_FloatVectorOperations.h), so this was
+    # an Intel-only property - an offline bounce at one buffer size need not
+    # match realtime monitoring at another on an Intel machine, while an
+    # Apple Silicon build of the same source is unaffected. Crypta#99
+    # measured the effect at -75.9 dB / 1.3e-03 peak worst case for its
+    # filter set, agreeing to 0.2 dB between MSVC and Apple clang x86_64,
+    # which ruled out codegen.
+    #
+    # Denormal protection is NOT removed by switching the guard off - it
+    # moves from state-zeroing at call boundaries to the FPU, which is both
+    # stronger and free. NaveAudioProcessor::processBlock() opens with
+    # juce::ScopedNoDenormals, which sets MXCSR FTZ|DAZ (mask 0x8040) on
+    # Intel and FPCR FZ on ARM for the whole callback and restores the
+    # host's own mode on the way out, so every arithmetic result is flushed
+    # rather than only the filter state juce::dsp happens to snap. No DSP in
+    # this plugin runs outside that scope: processBlockBypassed() is JUCE's
+    # default, which performs no arithmetic. The outcome is pinned by
+    # tests/RobustnessTests.cpp's decaying-tail gate ("nothing denormal
+    # survives a decay to silence"), which was written and falsified BEFORE
+    # this flag was flipped - Miserere's engines turned out to depend on the
+    # library snap for their exact-zero rest (basilica-audio/Miserere#46),
+    # and that is the failure mode the ordering guards against.
+    # src/PluginProcessor.cpp carries the preprocessor interlock tying this
+    # flag to ScopedNoDenormals being functional, so it cannot be set on a
+    # target where that class compiles to nothing.
+    JUCE_DSP_ENABLE_SNAP_TO_ZERO=0
 )
 
 # Add any extra juce:: modules a specific plugin needs (e.g. juce_audio_formats
