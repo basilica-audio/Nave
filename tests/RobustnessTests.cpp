@@ -372,3 +372,126 @@ TEST_CASE ("Silence after a burst does not cost more CPU than busy blocks", "[ro
     // it is a smoke alarm for a 10x denormal stall, not a precise benchmark.
     CHECK (silentMs < busyMs * 3.0);
 }
+
+TEST_CASE ("Denormals: nothing denormal survives a decay to silence, at any block size", "[robustness][denormals]")
+{
+    // Issue #54 (fleet audit class 2b; the pattern is basilica-audio/
+    // Crypta#99's). juce::dsp used to zero IIR filter state at the end of
+    // every process() call, which handled denormals but made the render
+    // depend on the host's buffer size on Intel: snap events land on block
+    // boundaries, so moving the boundaries moves the state trajectory.
+    // CMakeLists.txt now sets JUCE_DSP_ENABLE_SNAP_TO_ZERO=0, and the job
+    // moves to the FPU: processBlock() installs juce::ScopedNoDenormals,
+    // which sets MXCSR FTZ|DAZ on Intel and FPCR FZ on ARM for the whole
+    // callback.
+    //
+    // That trade is only sound if the replacement actually works, so this
+    // asserts the outcome rather than the mechanism: load the chain with
+    // real energy, then feed it digital silence for several seconds and
+    // require that not one sample of the decaying tail is a denormal. A
+    // denormal here would mean the FPU mode is not in force where it needs
+    // to be - the regression that shows up in the field as a CPU spike
+    // during the quiet passage after a loud one, not as a wrong number
+    // (Miserere's class-2 flip failed exactly this guarantee, which is why
+    // this test exists BEFORE the flag flip in the history of this branch).
+    //
+    // Nave's denormal exposure is the IIR state around the convolution:
+    // the LoCut/HiCut cut chains and the Distance shelving filters (all
+    // juce::dsp::IIR::Filter via ProcessorDuplicator - exactly the objects
+    // whose per-call snapToZero the flag removes). All of them are engaged
+    // here, and both slope modes are swept because the 24 dB/oct path is a
+    // different pair of filter objects from the 12 dB/oct path.
+    //
+    // Swept across block sizes because the guard this replaces fired once
+    // per process() call: if anything in the chain still depended on call
+    // boundaries to stay normal, a small block would hide it and a large
+    // one would expose it.
+    //
+    // Verified to be capable of failing, which a "count is zero" assertion
+    // has to be before it means anything. With the ScopedNoDenormals in
+    // processBlock() removed and nothing else changed, measured on the same
+    // Universal build:
+    //
+    //  - arm64 (native): every one of the six configurations goes red, at
+    //    556376-563978 denormal samples each, the largest 1.17e-38.
+    //  - x86_64 (Rosetta 2), measured BEFORE the flag flip: still green,
+    //    because juce_dsp's per-call snap-to-zero (JUCE_SNAP_TO_ZERO is
+    //    `#if JUCE_INTEL`) was doing the denormal work on that slice - the
+    //    exact library dependency Miserere's engines turned out to have
+    //    (basilica-audio/Miserere#46), and the reason this test exists: with
+    //    the flag now off, ScopedNoDenormals is the only thing between the
+    //    Intel slice and that red.
+    //
+    // So the zero below is the FPU mode doing its job, not the signal
+    // failing to reach the denormal range.
+    constexpr double sampleRate = 48000.0;
+
+    for (const auto blockSize : { 32, 128, 512 })
+    {
+        for (const auto slopeIndex : { 0, 1 }) // 12 dB/oct, 24 dB/oct
+        {
+            INFO ("block size " << blockSize << ", slope index " << slopeIndex);
+
+            NaveAudioProcessor processor;
+            processor.setPlayConfigDetails (2, 2, sampleRate, blockSize);
+            processor.prepareToPlay (sampleRate, blockSize);
+
+            setParam (processor, ParamIDs::loCut, 300.0f);
+            setParam (processor, ParamIDs::hiCut, 3000.0f);
+            setParam (processor, ParamIDs::loCutSlope, static_cast<float> (slopeIndex));
+            setParam (processor, ParamIDs::hiCutSlope, static_cast<float> (slopeIndex));
+            setParam (processor, ParamIDs::mix, 100.0f);
+            // Distance engaged with Air on, so the shelving filters and the
+            // air pre-delay carry state into the decay as well.
+            setParam (processor, ParamIDs::micDistance, 50.0f);
+            setParam (processor, ParamIDs::distanceAir, 1.0f);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+
+            // Load every filter and delay line with real energy first -
+            // state that was never excited cannot denormalise on the way
+            // down. 110 Hz sits below the 300 Hz LoCut corner, so the cut
+            // filters do real work and hold real state.
+            for (int block = 0; block * blockSize < static_cast<int> (0.5 * sampleRate); ++block)
+            {
+                TestHelpers::fillWithSine (buffer, sampleRate, 110.0, 0.5f,
+                                           static_cast<juce::int64> (block) * blockSize);
+                processor.processBlock (buffer, midi);
+            }
+
+            // Then digital silence, long enough for every decaying state
+            // variable to fall through the float denormal range (1.18e-38
+            // down to 1.4e-45) if it is going to.
+            constexpr float smallestNormal = std::numeric_limits<float>::min();
+            auto denormalSamples = 0;
+            auto worstDenormal = 0.0f;
+
+            for (int block = 0; block * blockSize < static_cast<int> (6.0 * sampleRate); ++block)
+            {
+                buffer.clear();
+                processor.processBlock (buffer, midi);
+
+                for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+                {
+                    const auto* data = buffer.getReadPointer (channel);
+
+                    for (int sample = 0; sample < blockSize; ++sample)
+                    {
+                        const auto magnitude = std::abs (data[sample]);
+
+                        if (magnitude > 0.0f && magnitude < smallestNormal)
+                        {
+                            ++denormalSamples;
+                            worstDenormal = juce::jmax (worstDenormal, magnitude);
+                        }
+                    }
+                }
+            }
+
+            INFO ("denormal samples " << denormalSamples << ", largest " << worstDenormal);
+            CHECK (denormalSamples == 0);
+            CHECK (TestHelpers::allSamplesFinite (buffer));
+        }
+    }
+}
