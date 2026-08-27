@@ -86,6 +86,33 @@ juce_add_binary_data(NaveBinaryData SOURCES
     resources/gui/knob_brass_strip_320px_128f.png
     resources/gui/faceplate_nave_900x600.png
     resources/gui/faceplate_nave_1800x1200.png
+    # Wave-3 compositional GUI (campaign 2026-08, supersedes the filmstrip
+    # faceplate assets above, which stay embedded per the suite's
+    # "superseded, not deleted" convention):
+    #   - plate_nave.png: the accepted EMPTY family plate render
+    #     (.scaffold/gui-assets/rollout-2026-07/nave/out/plate-01.png - see
+    #     out/VERDICT.md).
+    #   - sprite_knob_brass.png + sprite_ir_slot_{a,b}.png: extracted
+    #     control sprites from .scaffold/gui-assets/sprite-library/ (see its
+    #     provenance.md for source render + crop rect per sprite),
+    #     backing-blended via blend_sprite_backing.py so their basalt
+    #     patches cross-fade into the local plate ground (no visible
+    #     rectangular patches). The D1 cartridge slots (DECISIONS.md D1)
+    #     bake the empty slot + load button only; the loaded IR's name is
+    #     live JUCE text (gui/IrCartridgeSlot.h).
+    #   - layout_manifest.json: the compositional layout manifest, the
+    #     single source of truth for control positions (see
+    #     src/gui/LayoutManifest.h).
+    resources/gui/plate_nave.png
+    resources/gui/sprite_knob_brass.png
+    resources/gui/sprite_ir_slot_a.png
+    resources/gui/sprite_ir_slot_b.png
+    resources/gui/layout_manifest.json
+    # Suite typography: EB Garamond (OFL, resources/fonts/OFL-EBGaramond.txt)
+    # - the engraved control lettering + the IR-name window text are drawn
+    # live (text is never baked into the renders).
+    resources/fonts/EBGaramond-Regular.ttf
+    resources/fonts/EBGaramond-SemiBold.ttf
     # Brand icon (already the plugin's ICON_BIG; embedded here additionally
     # so the editor can draw it in the faceplate's header roundel).
     docs/assets/icon-256.png
@@ -191,6 +218,9 @@ target_link_libraries(Tests PRIVATE SharedCode Catch2::Catch2)
 target_compile_definitions(Tests PRIVATE
     $<TARGET_PROPERTY:Nave,COMPILE_DEFINITIONS>
     JUCE_MODAL_LOOPS_PERMITTED=1
+    # Absolute path to docs/, so tests/gui/EditorSnapshotTests.cpp can write
+    # the committed docs/gui-preview.png directly rather than a copy step.
+    NAVE_DOCS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs"
     # The bundled factory IR library (issue #33) is shipped as files installed
     # into the user's IR library folder, not as BinaryData, because the browser
     # is a directory scanner - so tests/FactoryIrLibraryTests.cpp reads the

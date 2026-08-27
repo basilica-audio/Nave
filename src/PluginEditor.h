@@ -2,15 +2,17 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
-#include <array>
+#include <memory>
+#include <vector>
 
 #include "gui/BasilicaLookAndFeel.h"
-#include "gui/FilmstripKnob.h"
 #include "gui/IrBrowserPanel.h"
+#include "gui/IrCartridgeSlot.h"
+#include "gui/LayoutManifest.h"
+#include "gui/MasterCropKnob.h"
+#include "gui/PlateTypography.h"
 #include "ir/FactoryIrLibrary.h"
 #include "presets/PresetBar.h"
-
-#include <vector>
 
 class NaveAudioProcessor;
 
@@ -29,23 +31,32 @@ namespace nave
     const std::vector<basilica::ir::FactoryIrAsset>& factoryIrAssets();
 }
 
-// M3 GUI pass: Nave's photoreal skeuomorphic editor, built from the suite's
-// reusable src/gui/ component family (FilmstripKnob, BasilicaLookAndFeel -
-// see also AnalogMeter/FilmstripToggle, copied verbatim into src/gui/ for
-// suite consistency even though Nave's own layout has no meter or toggle
-// bays) plus the pre-rendered faceplate PNG (see
-// .scaffold/gui-assets/faceplate-nave-v1/README.md). Every FilmstripKnob is
-// wired to a real APVTS parameter; the ir_loader bay's controls are wired to
-// real (non-APVTS) IR-file-slot state on the processor - no dead decoration.
+// Wave-3 COMPOSITIONAL photoreal editor (campaign 2026-08, supersedes the
+// M3 filmstrip editor - FilmstripKnob and the faceplate-nave-v1 assets
+// stay in the tree per the suite's "superseded, not deleted" convention):
+// the accepted EMPTY family plate render (resources/gui/plate_nave.png) is
+// the sole baked background, and every control is composited live from the
+// extracted control-sprite library at the coordinates in
+// resources/gui/layout_manifest.json (single source of truth - see
+// gui/LayoutManifest.h). Draw order:
 //
-// Layout: a single "knobLayout" table plus dedicated ir_loader bay wiring
-// (see PluginEditor.cpp), positioned from the base-resolution coordinates in
-// PluginEditorLayout.h (nave::layout), mirroring silentium's M3 pilot
-// pattern (src/PluginEditorLayout.h there, slnt::layout).
+//   1. plate render (paint())
+//   2. static knob sprites (paint(), under the children)
+//   3. engraved lettering - PlateTypography, gilded gold on dark basalt
+//   4. rotating cap crops - one MasterCropKnob child per knob
+//   5. D1 IR cartridge slots - two IrCartridgeSlot children drawing their
+//      own sprite + the loaded IR's warm-gold name, wired to the REAL IR
+//      A/B loaders (browser overlay, direct file chooser, default reset -
+//      see IrCartridgeSlot.h's operability contract)
+//   6. the IR browser overlay + issue #42's preset-IR notice, carried
+//      over unchanged from the M3 editor
 //
-// Window scaling is STEPPED (100/150/200%, a UA-style corner control next to
-// the preset bar, persisted as a plain property on the APVTS state tree),
-// matching every other M3-complete plugin in the suite.
+// Nave-specific control set (rollout-2026-07/nave/control-inventory.md):
+// 6 knobs (4+2 rows), 0 toggles (no host-visible bypass parameter),
+// 0 meters (no metering DSP - no dead decoration), 2 D1 slots.
+//
+// Window scaling is STEPPED (100/150/200%, UA-style corner control,
+// persisted as a plain property on the APVTS state tree).
 class NaveAudioProcessorEditor final : public juce::AudioProcessorEditor
 {
 public:
@@ -55,94 +66,81 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
 
+    // The parsed layout manifest - exposed read-only so tests assert
+    // layout invariants against the exact data this editor composites
+    // from (tests/gui/EditorLayoutTests.cpp).
+    const basilica::gui::LayoutManifest& layoutManifest() const noexcept { return manifest; }
+
 private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
 
     struct Knob
     {
-        std::unique_ptr<basilica::gui::FilmstripKnob> slider;
-        juce::Label label;
+        const basilica::gui::ManifestControl* entry = nullptr;
+        std::unique_ptr<basilica::gui::MasterCropKnob> slider;
         std::unique_ptr<SliderAttachment> attachment;
     };
 
-    // Which of the two independent IR slots (see ParamIDs::
-    // irFilePathProperty/irFilePathBProperty's docs - plain ValueTree
-    // properties, not APVTS parameters) this IrSlot instance controls.
+    // Which of the two independent IR slots (plain ValueTree properties,
+    // not APVTS parameters - see ParamIDs) a cartridge instance controls.
     enum class IrSlotId
     {
         A,
         B
     };
 
-    // One IR loader "slot": a read-only name label showing the currently
-    // loaded file (or "Default"), a "Browse..." button that opens the IR
-    // browser overlay (src/gui/IrBrowserPanel.h) targeting this slot, a
-    // "Load IR..." button that opens a FileChooser for picking one known
-    // file directly, and a "Default" button that reverts to the built-in
-    // unit-impulse IR. Styled entirely via BasilicaLookAndFeel's default
-    // juce::TextButton/juce::Label drawing (JUCE 8.0.14's LookAndFeel_V4
-    // dark colour scheme, which BasilicaLookAndFeel inherits unmodified -
-    // already reasonably readable against the faceplate's dark stone
-    // background, and LookAndFeel_V4::drawButtonBackground boosts the
-    // button's saturation on keyboard focus, giving standard TextButtons a
-    // built-in focus affordance the suite's custom-painted FilmstripKnob/
-    // FilmstripToggle need paintFocusRing() to replicate - see
-    // BasilicaLookAndFeel.h's docs).
-    struct IrSlot
+    struct Slot
     {
-        juce::Label nameLabel;
-        juce::TextButton browseButton;
-        juce::TextButton loadButton;
-        juce::TextButton defaultButton;
+        const basilica::gui::ManifestControl* entry = nullptr;
+        IrSlotId id = IrSlotId::A;
+        juce::String label;
+        std::unique_ptr<basilica::gui::IrCartridgeSlot> component;
         std::unique_ptr<juce::FileChooser> activeFileChooser;
     };
 
-    void configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText);
-    void configureIrSlot (IrSlot& slot, IrSlotId id, const juce::String& slotLabel);
-    void refreshIrSlotLabel (IrSlot& slot, IrSlotId id, const juce::String& slotLabel);
-    void chooseImpulseResponseForSlot (IrSlot& slot, IrSlotId id, const juce::String& slotLabel);
-    void openIrBrowserForSlot (IrSlotId id, const juce::String& slotLabel);
-
-    // Issue #42's non-modal notice: a preset that referenced an IR the user
-    // does not have loaded its parameters anyway and left the IR slots alone,
-    // and this says so. Passing an empty string hides the strip again, which
-    // is what every successful preset load and every manual IR change does.
-    //
-    // Deliberately a plain, non-interactive juce::Label rather than a dialog:
-    // the preset DID open, so there is nothing to confirm and nothing to
-    // block on - a modal here would be an error report for a non-error.
+    juce::Image spriteImageFor (const juce::String& spriteKey) const;
+    void buildControlsFromManifest();
+    void configureSlotCallbacks (Slot& slot);
+    void refreshSlotName (Slot& slot);
+    void chooseImpulseResponseForSlot (Slot& slot);
+    void openIrBrowserForSlot (Slot& slot);
     void showPresetIrNotice (const juce::String& message);
-    IrSlot& slotFor (IrSlotId id) noexcept;
+    Slot* slotFor (IrSlotId id) noexcept;
     void applyScaleStep (int newStepIndex);
     void cycleScale();
+    void drawStaticSprites (juce::Graphics& g) const;
+    void drawPlateLettering (juce::Graphics& g) const;
+
+    float plateScale() const noexcept;
+    juce::Point<float> plateOrigin() const noexcept;
 
     NaveAudioProcessor& audioProcessor;
 
+    // Installed on `this` so the IR browser overlay + preset bar keep the
+    // suite styling (the compositional plate itself needs no LookAndFeel).
     basilica::gui::BasilicaLookAndFeel lookAndFeel;
 
-    juce::Image facePlateImage1x, facePlateImage2x;
-    juce::Image brandIconImage;
+    basilica::gui::LayoutManifest manifest;
+
+    juce::Image plateImage;
+    juce::Image knobSprite, slotSpriteA, slotSpriteB;
 
     basilica::presets::PresetBar presetBar;
     juce::TextButton scaleButton;
     int scaleStepIndex = 0; // 0 = 100%, 1 = 150%, 2 = 200%
 
-    static constexpr int numKnobs = 6;
-    std::array<Knob, numKnobs> knobs;
-
-    IrSlot irSlotA;
-    IrSlot irSlotB;
+    std::vector<Knob> knobs;
+    std::vector<std::unique_ptr<Slot>> slots;
 
     // The IR browser overlay (issue #1). One shared instance for both
-    // slots, retargeted per open; ADDED last in the constructor body
-    // (addChildComponent order, not declaration order, is what sets
-    // z-order) so it covers every other child when visible.
+    // slots, retargeted per open; ADDED last in the constructor body so it
+    // covers every other child when visible.
     basilica::gui::IrBrowserPanel irBrowserPanel;
     IrSlotId irBrowserTargetSlot = IrSlotId::A;
-    juce::String irBrowserTargetLabel { "IR A" };
 
-    juce::Label titleLabel;
     juce::Label presetIrNoticeLabel;
+
+    basilica::gui::PlateTypography typography;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NaveAudioProcessorEditor)
 };

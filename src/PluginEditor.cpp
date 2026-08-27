@@ -1,82 +1,28 @@
 #include "PluginEditor.h"
 #include "PluginEditorLayout.h"
 #include "PluginProcessor.h"
-#include "gui/ImageDensity.h"
-#include "ir/FactoryIrLibrary.h"
 #include "ir/IrLibrary.h"
 #include "params/ParameterIds.h"
 #include "presets/Localisation.h"
 
 #include <BinaryData.h>
 
+#include <cmath>
+
 namespace
 {
-    // Base (@1x, 100% scale) faceplate geometry lives in PluginEditorLayout.h
-    // (nave::layout) rather than here, so tests/gui/EditorLayoutTests.cpp can
-    // assert layout invariants against the exact constants this file lays
-    // components out with - see that header's docs.
     using namespace nave::layout;
-
-
-    // Nave's 6 parameters split across the tone/character/output bays
-    // (.scaffold/gui-assets/faceplate-nave-v1/layout-manifest.json), 2 knobs
-    // per bay, in the same signal-flow order as the faceplate design brief:
-    // character (what shapes the cab) -> tone (post-convolution HP/LP) ->
-    // output (dry/wet + trim) reads left-to-right in the manifest as
-    // tone/character/output, so the knobLayout table below follows that
-    // left-to-right bay order rather than a separate signal-flow ordering.
-    enum class Bay
-    {
-        tone,
-        character,
-        output
-    };
-
-    struct KnobLayoutEntry
-    {
-        const char* parameterId;
-        const char* labelText;
-        Bay bay;
-        int col; // 0 = left knob in the bay, 1 = right knob
-    };
-
-    constexpr std::array<KnobLayoutEntry, 6> knobLayout {
-        KnobLayoutEntry { ParamIDs::loCut, "LoCut", Bay::tone, 0 },
-        KnobLayoutEntry { ParamIDs::hiCut, "HiCut", Bay::tone, 1 },
-        KnobLayoutEntry { ParamIDs::irBlend, "IR Blend", Bay::character, 0 },
-        KnobLayoutEntry { ParamIDs::micDistance, "Distance", Bay::character, 1 },
-        KnobLayoutEntry { ParamIDs::mix, "Mix", Bay::output, 0 },
-        KnobLayoutEntry { ParamIDs::level, "Level", Bay::output, 1 },
-    };
-
-    const juce::Rectangle<int>& bayRectFor (Bay bay)
-    {
-        switch (bay)
-        {
-            case Bay::tone: return toneBay1x;
-            case Bay::character: return characterBay1x;
-            case Bay::output: return outputBay1x;
-        }
-
-        return toneBay1x;
-    }
 
     juce::Image loadImage (const char* data, int size)
     {
         return juce::ImageCache::getFromMemory (data, size);
     }
 
-    // M2 i18n frame (.scaffold/specs/preset-system-m2.md): selects German
-    // (resources/i18n/de.txt) or falls through to English, once, at editor
-    // construction - see Localisation.h's docs. `presetBar` is a member
-    // initialised via the constructor's initialiser list, and its own
-    // constructor already calls TRANS() on every button label - member
-    // initialisers run in declaration order regardless of the order
-    // they're written in, so this helper (called from presetBar's own
-    // initialiser expression below) is what actually guarantees
-    // installLocalisation() runs before presetBar exists, not an
-    // installLocalisation() call in the constructor *body*, which would run
-    // too late. Copied from silentium's M3 pilot (src/PluginEditor.cpp).
+    // M2 i18n frame: selects German (resources/i18n/de.txt) or falls
+    // through to English, once, at editor construction - see
+    // Localisation.h's docs. Called from presetBar's own initialiser
+    // expression so installLocalisation() is guaranteed to run before
+    // PresetBar's constructor TRANS()es its button labels.
     basilica::presets::PresetManager& initLocalisationThenGetPresetManager (NaveAudioProcessor& processor)
     {
         basilica::presets::installLocalisation (BinaryData::de_txt, BinaryData::de_txtSize);
@@ -84,12 +30,31 @@ namespace
     }
 
     // Non-parameter, per-session UI state: the stepped scale choice (0/1/2)
-    // stored as a plain property directly on apvts.state, exactly like
-    // ParamIDs::irFilePathProperty (see that header's docs) and silentium's
-    // own uiScaleStepProperty - round-trips through
-    // getStateInformation()/setStateInformation() without needing a host-
-    // automatable parameter for a view choice.
+    // stored as a plain property directly on apvts.state.
     constexpr const char* uiScaleStepProperty = "uiScaleStep";
+
+    // Engraved lettering: gilded antique gold with a dark drop shadow one
+    // scaled pixel below (the family typography-pass convention for dark
+    // grounds).
+    const basilica::gui::EngravedTextStyle plateLabelStyle {
+        juce::Colour (0xf0d6ad5e), juce::Colour (0x8c000000), 13.0f, 0.16f, true
+    };
+
+    struct SpriteGeometry
+    {
+        juce::Point<float> anchor;
+        float capRadius; // 0 = not a rotating-cap sprite
+        float minAngleDeg, maxAngleDeg;
+    };
+
+    SpriteGeometry geometryForKind (const juce::String& kind)
+    {
+        if (kind == "slot")
+            return { { slotAnchorX, slotAnchorY }, 0.0f, 0.0f, 0.0f };
+
+        return { { knobAnchorX, knobAnchorY }, knobCapRadius,
+                 -knobSweepDeg * 0.5f, knobSweepDeg * 0.5f };
+    }
 }
 
 // The bundled factory IR library (issue #33), as embedded bytes. Declared in
@@ -142,59 +107,41 @@ const std::vector<basilica::ir::FactoryIrAsset>& nave::factoryIrAssets()
 NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processorToEdit)
     : juce::AudioProcessorEditor (&processorToEdit),
       audioProcessor (processorToEdit),
-      presetBar (initLocalisationThenGetPresetManager (processorToEdit))
+      manifest (basilica::gui::LayoutManifest::parse (BinaryData::layout_manifest_json,
+                                                      BinaryData::layout_manifest_jsonSize)),
+      presetBar (initLocalisationThenGetPresetManager (processorToEdit)),
+      typography (BinaryData::EBGaramondRegular_ttf, BinaryData::EBGaramondRegular_ttfSize,
+                  BinaryData::EBGaramondSemiBold_ttf, BinaryData::EBGaramondSemiBold_ttfSize)
 {
+    // For the IR browser overlay + preset bar chrome (the plate itself is
+    // fully sprite-composited and needs no LookAndFeel).
     setLookAndFeel (&lookAndFeel);
 
-    facePlateImage1x = loadImage (BinaryData::faceplate_nave_900x600_png, BinaryData::faceplate_nave_900x600_pngSize);
-    facePlateImage2x = loadImage (BinaryData::faceplate_nave_1800x1200_png, BinaryData::faceplate_nave_1800x1200_pngSize);
-    brandIconImage = loadImage (BinaryData::icon256_png, BinaryData::icon256_pngSize);
+    // A structurally broken manifest must fail loudly in development and
+    // degrade to a plate-only editor in production, never crash.
+    jassert (manifest.isValid());
 
-    // Creation order below doubles as the accessibility/keyboard focus order
-    // (JUCE's default FocusTraverser walks children in z-order, i.e.
-    // creation order, when no custom traverser is installed) - kept
-    // deliberately matching the visual reading order: header/scale control,
-    // preset bar, the IR A/IR B loader controls, then the knob bays
-    // left-to-right (tone, character, output).
-    titleLabel.setText ("Nave", juce::dontSendNotification);
-    titleLabel.setJustificationType (juce::Justification::centredLeft);
-    titleLabel.setFont (juce::Font (juce::FontOptions {}
-                                        .withName (juce::Font::getDefaultSerifFontName())
-                                        .withHeight (26.0f)
-                                        .withStyle ("Bold")));
-    titleLabel.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (titleLabel);
+    plateImage = loadImage (BinaryData::plate_nave_png, BinaryData::plate_nave_pngSize);
+    knobSprite = loadImage (BinaryData::sprite_knob_brass_png, BinaryData::sprite_knob_brass_pngSize);
+    slotSpriteA = loadImage (BinaryData::sprite_ir_slot_a_png, BinaryData::sprite_ir_slot_a_pngSize);
+    slotSpriteB = loadImage (BinaryData::sprite_ir_slot_b_png, BinaryData::sprite_ir_slot_b_pngSize);
 
+    // Creation order doubles as the keyboard focus order (JUCE's default
+    // FocusTraverser walks children in z-order = creation order): preset
+    // bar + scale control first, then the manifest's own reading order
+    // (the two cartridge slots, then the knob rows in signal-flow order).
     addAndMakeVisible (presetBar);
 
-    // A-05-equivalent (silentium M3 a11y review, applied here from the
-    // start rather than as a follow-up fix): the accessible title is set
-    // from applyScaleStep() below, which runs once here at construction and
-    // again on every subsequent click, so it always reflects the CURRENT
-    // scale rather than a static string. componentID lets tests find this
-    // button without depending on its (dynamic) title.
     scaleButton.setComponentID ("scaleButton");
     scaleButton.onClick = [this] { cycleScale(); };
     addAndMakeVisible (scaleButton);
 
-    const auto knobStrip1x = loadImage (BinaryData::knob_brass_strip_160px_128f_png, BinaryData::knob_brass_strip_160px_128f_pngSize);
-    const auto knobStrip2x = loadImage (BinaryData::knob_brass_strip_320px_128f_png, BinaryData::knob_brass_strip_320px_128f_pngSize);
-
-    for (size_t i = 0; i < knobLayout.size(); ++i)
-    {
-        auto& entry = knobLayout[i];
-        knobs[i].slider = std::make_unique<basilica::gui::FilmstripKnob> (knobStrip1x, knobStrip2x, 128);
-        configureKnob (knobs[i], entry.parameterId, entry.labelText);
-    }
-
-    configureIrSlot (irSlotA, IrSlotId::A, "IR A");
-    configureIrSlot (irSlotB, IrSlotId::B, "IR B");
+    buildControlsFromManifest();
 
     // The IR browser overlay (issue #1): added LAST so it sits above every
     // other child when visible (z-order follows add order). Hidden until a
-    // slot's Browse... button opens it; the editor owns visibility and the
-    // slot targeting, the panel owns scanning/filtering/selection (see
-    // IrBrowserPanel.h).
+    // slot opens it; the editor owns visibility and the slot targeting, the
+    // panel owns scanning/filtering/selection (see IrBrowserPanel.h).
     irBrowserPanel.onIrChosen = [this] (const juce::File& irFile)
     {
         const auto loaded = irBrowserTargetSlot == IrSlotId::A
@@ -202,7 +149,8 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
                                  : audioProcessor.loadImpulseResponseFromFileB (irFile);
 
         if (loaded)
-            refreshIrSlotLabel (slotFor (irBrowserTargetSlot), irBrowserTargetSlot, irBrowserTargetLabel);
+            if (auto* slot = slotFor (irBrowserTargetSlot))
+                refreshSlotName (*slot);
     };
     irBrowserPanel.onLibraryFolderChanged = [this] (const juce::File& newFolder)
     {
@@ -251,13 +199,13 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
     {
         irBrowserPanel.setVisible (false);
 
-        // Hand keyboard focus back to the Browse... button that opened the
+        // Hand keyboard focus back to the cartridge slot that opened the
         // overlay, so a keyboard/AT user lands where they left off.
         // grabKeyboardFocus() needs a live native peer - absent in headless
         // tests, hence the guard.
-        auto& browseButton = slotFor (irBrowserTargetSlot).browseButton;
-        if (browseButton.isShowing())
-            browseButton.grabKeyboardFocus();
+        if (auto* slot = slotFor (irBrowserTargetSlot))
+            if (slot->component != nullptr && slot->component->isShowing())
+                slot->component->grabKeyboardFocus();
     };
     addChildComponent (irBrowserPanel);
 
@@ -267,8 +215,6 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
     // is not part of the keyboard focus order and cannot swallow a click
     // meant for the art beneath it - but it does carry an accessible title,
     // so a screen-reader user is told the same thing a sighted one is.
-    // componentID (the same convention scaleButton uses) lets a test find
-    // the strip without depending on its text, which is translated.
     presetIrNoticeLabel.setComponentID ("presetIrNotice");
     presetIrNoticeLabel.setJustificationType (juce::Justification::centred);
     presetIrNoticeLabel.setMinimumHorizontalScale (1.0f);
@@ -299,10 +245,7 @@ NaveAudioProcessorEditor::NaveAudioProcessorEditor (NaveAudioProcessor& processo
 
 NaveAudioProcessorEditor::~NaveAudioProcessorEditor()
 {
-    // Before anything else: the processor outlives the editor, and the
-    // callback captures `this`.
     audioProcessor.onPresetIrNotice = nullptr;
-
     setLookAndFeel (nullptr);
 }
 
@@ -313,113 +256,115 @@ void NaveAudioProcessorEditor::showPresetIrNotice (const juce::String& message)
     presetIrNoticeLabel.setVisible (message.isNotEmpty());
 }
 
-void NaveAudioProcessorEditor::configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText)
+juce::Image NaveAudioProcessorEditor::spriteImageFor (const juce::String& spriteKey) const
 {
-    knob.slider->setPopupDisplayEnabled (true, true, this);
-    knob.slider->setTitle (labelText);
-    knob.slider->setName (labelText);
-    addAndMakeVisible (*knob.slider);
+    if (spriteKey == "ir_slot_a")
+        return slotSpriteA;
 
-    if (auto* param = audioProcessor.apvts.getParameter (parameterId))
+    if (spriteKey == "ir_slot_b")
+        return slotSpriteB;
+
+    return knobSprite;
+}
+
+void NaveAudioProcessorEditor::buildControlsFromManifest()
+{
+    for (const auto& entry : manifest.controls)
     {
-        const auto defaultValue = param->getNormalisableRange().convertFrom0to1 (param->getDefaultValue());
-        knob.slider->setDoubleClickReturnValue (true, defaultValue);
-    }
-
-    knob.label.setText (labelText, juce::dontSendNotification);
-    knob.label.setJustificationType (juce::Justification::centred);
-    knob.label.setInterceptsMouseClicks (false, false);
-    addAndMakeVisible (knob.label);
-
-    // SliderAttachment MUST be constructed before the textFromValueFunction
-    // override below, not after: JUCE 8.0.14's SliderParameterAttachment
-    // constructor (juce_ParameterAttachments.cpp:128) itself assigns
-    // `slider.textFromValueFunction = [&param] (double v) { return
-    // param.getText (...); }` (no unit) as part of wiring the attachment -
-    // setting our own function BEFORE this point would be silently
-    // clobbered the moment the attachment is created. See silentium's
-    // src/PluginEditor.cpp (the M3 pilot) for the original writeup of this
-    // ordering bug.
-    knob.attachment = std::make_unique<SliderAttachment> (audioProcessor.apvts, parameterId, *knob.slider);
-
-    if (auto* param = audioProcessor.apvts.getParameter (parameterId))
-    {
-        // Every parameter declares its unit via .withLabel() in
-        // ParameterLayout.cpp (Hz/%/dB), but SliderAttachment's own
-        // textFromValueFunction (see above) formats the value but drops the
-        // unit entirely. This feeds BOTH the popup value display
-        // (setPopupDisplayEnabled above) and the accessibility value string
-        // (juce_Slider.cpp's SliderAccessibilityHandler::ValueInterface::
-        // getCurrentValueAsString() calls Slider::getTextFromValue(), which
-        // calls this same function), so one fix here covers both surfaces.
-        // Still uses the parameter's own getText() (not just a raw suffix)
-        // so the reported precision/rounding matches what the host itself
-        // would display.
-        knob.slider->textFromValueFunction = [param] (double v)
+        if (entry.kind == "slot")
         {
-            return param->getText (param->convertTo0to1 ((float) v), 0) + " " + param->getLabel();
+            auto slot = std::make_unique<Slot>();
+            slot->entry = &entry;
+            slot->id = entry.id == "irSlotA" ? IrSlotId::A : IrSlotId::B;
+            slot->label = slot->id == IrSlotId::A ? "IR A" : "IR B";
+
+            slot->component = std::make_unique<basilica::gui::IrCartridgeSlot> (
+                spriteImageFor (entry.sprite),
+                slot->id == IrSlotId::A ? "Impulse Response A" : "Impulse Response B");
+
+            configureSlotCallbacks (*slot);
+            refreshSlotName (*slot);
+            addAndMakeVisible (*slot->component);
+            slots.push_back (std::move (slot));
+            continue;
+        }
+
+        auto* parameter = audioProcessor.apvts.getParameter (entry.id);
+        jassert (parameter != nullptr); // manifest out of sync with ParameterLayout.cpp
+        if (parameter == nullptr)
+            continue;
+
+        const auto title = parameter->getName (64);
+        const auto geometry = geometryForKind (entry.kind);
+
+        Knob knob;
+        knob.entry = &entry;
+        knob.slider = std::make_unique<basilica::gui::MasterCropKnob> (
+            spriteImageFor (entry.sprite), geometry.anchor, geometry.capRadius, 0.94f,
+            geometry.minAngleDeg, geometry.maxAngleDeg);
+
+        knob.slider->setPopupDisplayEnabled (true, true, this);
+        knob.slider->setTitle (title);
+        knob.slider->setName (title);
+        addAndMakeVisible (*knob.slider);
+
+        const auto defaultValue = parameter->getNormalisableRange().convertFrom0to1 (parameter->getDefaultValue());
+        knob.slider->setDoubleClickReturnValue (true, defaultValue);
+
+        // SliderAttachment MUST be constructed before the
+        // textFromValueFunction override below - JUCE 8.0.14's
+        // SliderParameterAttachment constructor itself assigns
+        // slider.textFromValueFunction as part of wiring the attachment,
+        // which would silently clobber an override set beforehand.
+        knob.attachment = std::make_unique<SliderAttachment> (audioProcessor.apvts, entry.id, *knob.slider);
+
+        knob.slider->textFromValueFunction = [parameter] (double v)
+        {
+            auto text = parameter->getText (parameter->convertTo0to1 ((float) v), 0);
+            const auto label = parameter->getLabel();
+            return label.isNotEmpty() ? text + " " + label : text;
         };
         knob.slider->updateText();
+
+        knobs.push_back (std::move (knob));
     }
 }
 
-void NaveAudioProcessorEditor::configureIrSlot (IrSlot& slot, IrSlotId id, const juce::String& slotLabel)
+void NaveAudioProcessorEditor::configureSlotCallbacks (Slot& slot)
 {
-    // componentIDs are set purely so tests/gui/EditorAccessibilityTests.cpp
-    // can find these controls without depending on their (slot-specific,
-    // human-readable) titles - same rationale as scaleButton's componentID.
-    const auto idPrefix = id == IrSlotId::A ? juce::String ("irSlotA") : juce::String ("irSlotB");
+    auto* raw = &slot;
 
-    slot.nameLabel.setComponentID (idPrefix + ".nameLabel");
-    slot.nameLabel.setJustificationType (juce::Justification::centredLeft);
-    slot.nameLabel.setMinimumHorizontalScale (1.0f);
-    addAndMakeVisible (slot.nameLabel);
-    refreshIrSlotLabel (slot, id, slotLabel);
-
-    slot.browseButton.setComponentID (idPrefix + ".browseButton");
-    slot.browseButton.setButtonText ("Browse...");
-    slot.browseButton.setTitle ("Browse impulse response library, " + slotLabel);
-    slot.browseButton.onClick = [this, id, slotLabel] { openIrBrowserForSlot (id, slotLabel); };
-    addAndMakeVisible (slot.browseButton);
-
-    slot.loadButton.setComponentID (idPrefix + ".loadButton");
-    slot.loadButton.setButtonText ("Load IR...");
-    slot.loadButton.setTitle ("Load impulse response, " + slotLabel);
-    slot.loadButton.onClick = [this, &slot, id, slotLabel] { chooseImpulseResponseForSlot (slot, id, slotLabel); };
-    addAndMakeVisible (slot.loadButton);
-
-    slot.defaultButton.setComponentID (idPrefix + ".defaultButton");
-    slot.defaultButton.setButtonText ("Default");
-    slot.defaultButton.setTitle ("Reset " + slotLabel + " to the default impulse response");
-    slot.defaultButton.onClick = [this, &slot, id, slotLabel]
+    slot.component->onBrowse = [this, raw] { openIrBrowserForSlot (*raw); };
+    slot.component->onLoadFile = [this, raw] { chooseImpulseResponseForSlot (*raw); };
+    slot.component->onResetToDefault = [this, raw]
     {
-        if (id == IrSlotId::A)
+        if (raw->id == IrSlotId::A)
             audioProcessor.loadDefaultImpulseResponse();
         else
             audioProcessor.loadDefaultImpulseResponseB();
 
-        refreshIrSlotLabel (slot, id, slotLabel);
+        refreshSlotName (*raw);
     };
-    addAndMakeVisible (slot.defaultButton);
 }
 
-void NaveAudioProcessorEditor::refreshIrSlotLabel (IrSlot& slot, IrSlotId id, const juce::String& slotLabel)
+void NaveAudioProcessorEditor::refreshSlotName (Slot& slot)
 {
-    const auto irPath = id == IrSlotId::A ? audioProcessor.getCurrentIrFilePath() : audioProcessor.getCurrentIrFilePathB();
-    const auto displayText = slotLabel + ": " + (irPath.isEmpty() ? juce::String ("Default (no IR loaded)") : juce::File (irPath).getFileName());
+    const auto irPath = slot.id == IrSlotId::A ? audioProcessor.getCurrentIrFilePath()
+                                               : audioProcessor.getCurrentIrFilePathB();
 
-    slot.nameLabel.setText (displayText, juce::dontSendNotification);
-    slot.nameLabel.setTitle (displayText);
+    slot.component->setIrName (irPath.isEmpty() ? juce::String ("Default")
+                                                : juce::File (irPath).getFileNameWithoutExtension());
 
     // The user has just decided what is in this slot, which settles the
     // question any outstanding "this preset was made with..." notice was
-    // asking (issue #42). Leaving it up would nag about a choice already made.
+    // asking (issue #42). Leaving it up would nag about a choice already
+    // made.
     showPresetIrNotice ({});
 }
 
-void NaveAudioProcessorEditor::chooseImpulseResponseForSlot (IrSlot& slot, IrSlotId id, const juce::String& slotLabel)
+void NaveAudioProcessorEditor::chooseImpulseResponseForSlot (Slot& slot)
 {
-    const auto title = id == IrSlotId::A
+    const auto title = slot.id == IrSlotId::A
                             ? "Load a cabinet impulse response..."
                             : "Load a secondary cabinet impulse response (IR B)...";
 
@@ -427,31 +372,35 @@ void NaveAudioProcessorEditor::chooseImpulseResponseForSlot (IrSlot& slot, IrSlo
 
     constexpr auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
 
-    slot.activeFileChooser->launchAsync (flags, [this, &slot, id, slotLabel] (const juce::FileChooser& chooser)
+    auto* raw = &slot;
+    slot.activeFileChooser->launchAsync (flags, [this, raw] (const juce::FileChooser& chooser)
     {
         const auto file = chooser.getResult();
 
         if (! file.existsAsFile())
             return;
 
-        const auto loaded = id == IrSlotId::A
+        const auto loaded = raw->id == IrSlotId::A
                                  ? audioProcessor.loadImpulseResponseFromFile (file)
                                  : audioProcessor.loadImpulseResponseFromFileB (file);
 
         if (loaded)
-            refreshIrSlotLabel (slot, id, slotLabel);
+            refreshSlotName (*raw);
     });
 }
 
-NaveAudioProcessorEditor::IrSlot& NaveAudioProcessorEditor::slotFor (IrSlotId id) noexcept
+NaveAudioProcessorEditor::Slot* NaveAudioProcessorEditor::slotFor (IrSlotId id) noexcept
 {
-    return id == IrSlotId::A ? irSlotA : irSlotB;
+    for (auto& slot : slots)
+        if (slot->id == id)
+            return slot.get();
+
+    return nullptr;
 }
 
-void NaveAudioProcessorEditor::openIrBrowserForSlot (IrSlotId id, const juce::String& slotLabel)
+void NaveAudioProcessorEditor::openIrBrowserForSlot (Slot& slot)
 {
-    irBrowserTargetSlot = id;
-    irBrowserTargetLabel = slotLabel;
+    irBrowserTargetSlot = slot.id;
 
     const auto storedFolder = audioProcessor.apvts.state
                                   .getProperty (ParamIDs::irLibraryFolderProperty, juce::String())
@@ -470,7 +419,7 @@ void NaveAudioProcessorEditor::openIrBrowserForSlot (IrSlotId id, const juce::St
         ! basilica::ir::FactoryIrLibrary::isInstalledIn (basilica::ir::IrLibrary::defaultDirectory(),
                                                         nave::factoryIrAssets()));
 
-    irBrowserPanel.open (slotLabel, libraryFolder);
+    irBrowserPanel.open (slot.label, libraryFolder);
 }
 
 void NaveAudioProcessorEditor::cycleScale()
@@ -485,20 +434,28 @@ void NaveAudioProcessorEditor::applyScaleStep (int newStepIndex)
 
     const auto percentText = juce::String ((int) (scaleSteps[(size_t) scaleStepIndex] * 100.0f)) + "%";
     scaleButton.setButtonText (percentText);
-
-    // An explicitly-set AccessibilityHandler title always wins over the
-    // button's own text for screen readers (JUCE 8.0.14
-    // juce_ButtonAccessibilityHandler.h), so a title set once at
-    // construction and never updated would silently strand AT users on a
-    // stale percentage forever. Re-setting the title here, alongside the
-    // visible text, on every step change (construction included, since this
-    // runs from the constructor too) keeps both surfaces in sync - see
-    // silentium's src/PluginEditor.cpp (A-05 fix) for the original writeup.
     scaleButton.setTitle ("Window scale, " + percentText);
 
     const auto scale = scaleSteps[(size_t) scaleStepIndex];
+
+    // The IR-name font tracks the slots' drawn size (sprite px -> screen px).
+    const auto slotFontHeight = slotNameFontSpritePx * 0.85f * plateToUnit * scale;
+    for (auto& slot : slots)
+        slot->component->setNameFont (typography.font (slotFontHeight, false, 0.02f));
+
     setSize ((int) std::lround ((float) baseEditorWidth * scale),
              (int) std::lround ((float) baseEditorHeight * scale));
+}
+
+float NaveAudioProcessorEditor::plateScale() const noexcept
+{
+    return plateToUnit * scaleSteps[(size_t) scaleStepIndex];
+}
+
+juce::Point<float> NaveAudioProcessorEditor::plateOrigin() const noexcept
+{
+    const auto scale = scaleSteps[(size_t) scaleStepIndex];
+    return { 0.0f, (float) (topStripHeight1x + topStripGap1x) * scale };
 }
 
 void NaveAudioProcessorEditor::paint (juce::Graphics& g)
@@ -506,96 +463,130 @@ void NaveAudioProcessorEditor::paint (juce::Graphics& g)
     g.fillAll (juce::Colours::black);
 
     const auto scale = scaleSteps[(size_t) scaleStepIndex];
-    const auto plateBounds = juce::Rectangle<float> (0.0f, (float) topStripHeight1x * scale + (float) topStripGap1x * scale,
-                                                      (float) plateWidth1x * scale, (float) plateHeight1x * scale);
 
-    const auto& plateImage = basilica::gui::pickImageForWidth (facePlateImage1x, facePlateImage2x,
-                                                               plateWidth1x, (int) plateBounds.getWidth());
+    // Top chrome strip behind the preset bar + scale button.
+    const auto stripHeight = (float) topStripHeight1x * scale;
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff17141a), 0.0f, 0.0f,
+                                             juce::Colour (0xff0b090d), 0.0f, stripHeight, false));
+    g.fillRect (juce::Rectangle<float> (0.0f, 0.0f, (float) getWidth(), stripHeight));
+    g.setColour (juce::Colour (0xff5a4420));
+    g.fillRect (juce::Rectangle<float> (0.0f, stripHeight - 1.0f * scale, (float) getWidth(), 1.0f * scale));
+
+    g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+
+    // 1. The empty family plate.
     if (plateImage.isValid())
-        g.drawImage (plateImage, plateBounds);
-
-    if (brandIconImage.isValid())
     {
-        const auto d = (float) roundelRadius1x * 1.7f * scale;
-        const auto cx = (float) roundelCentre1x.x * scale;
-        const auto cy = plateBounds.getY() + (float) roundelCentre1x.y * scale;
-        g.drawImage (brandIconImage, juce::Rectangle<float> (d, d).withCentre ({ cx, cy }));
+        const auto origin = plateOrigin();
+        g.drawImage (plateImage,
+                     juce::Rectangle<float> (origin.x, origin.y,
+                                             (float) plateWidth1x * scale, (float) plateHeight1x * scale),
+                     juce::RectanglePlacement::stretchToFit, false);
+    }
+
+    // 2. Static knob sprites (rotating caps are MasterCropKnob children
+    // drawn after this method returns; the cartridge slots draw their own
+    // sprite entirely, see IrCartridgeSlot.h).
+    drawStaticSprites (g);
+
+    // 3. Engraved lettering - after the sprites so each label sits on top
+    // of its control's feathered basalt patch, still under all children.
+    drawPlateLettering (g);
+}
+
+void NaveAudioProcessorEditor::drawStaticSprites (juce::Graphics& g) const
+{
+    const auto k = plateScale();
+    const auto origin = plateOrigin();
+
+    for (const auto& entry : manifest.controls)
+    {
+        if (entry.kind == "slot")
+            continue; // IrCartridgeSlot children own their full visual
+
+        const auto sprite = spriteImageFor (entry.sprite);
+        if (! sprite.isValid())
+            continue;
+
+        const auto geometry = geometryForKind (entry.kind);
+        const auto drawScale = entry.scale * k;
+
+        const auto transform = juce::AffineTransform::scale (drawScale)
+                                   .translated (origin.x + (entry.cx - geometry.anchor.x * entry.scale) * k,
+                                                origin.y + (entry.cy - geometry.anchor.y * entry.scale) * k);
+
+        g.drawImageTransformed (sprite, transform);
+    }
+}
+
+void NaveAudioProcessorEditor::drawPlateLettering (juce::Graphics& g) const
+{
+    const auto k = plateScale();
+    const auto origin = plateOrigin();
+    const auto uiScale = scaleSteps[(size_t) scaleStepIndex];
+
+    for (const auto& entry : manifest.controls)
+    {
+        if (entry.label.isEmpty() || entry.labelCy <= 0.0f)
+            continue;
+
+        const juce::Rectangle<float> box (origin.x + (entry.cx - labelBoxWidthPlatePx * 0.5f) * k,
+                                          origin.y + (entry.labelCy - labelBoxHeightPlatePx * 0.5f) * k,
+                                          labelBoxWidthPlatePx * k,
+                                          labelBoxHeightPlatePx * k);
+
+        typography.drawEngraved (g, entry.label, box, uiScale, plateLabelStyle);
     }
 }
 
 void NaveAudioProcessorEditor::resized()
 {
-    const auto scale = scaleSteps[(size_t) scaleStepIndex];
-    const auto s = [scale] (int v) { return (int) std::lround ((float) v * scale); };
+    const auto uiScale = scaleSteps[(size_t) scaleStepIndex];
+    const auto s = [uiScale] (int v) { return (int) std::lround ((float) v * uiScale); };
 
     auto bounds = getLocalBounds();
     auto topStrip = bounds.removeFromTop (s (topStripHeight1x));
 
-    scaleButton.setBounds (topStrip.removeFromRight (s (scaleButtonWidth1x)));
-    presetBar.setBounds (topStrip);
+    scaleButton.setBounds (topStrip.removeFromRight (s (scaleButtonWidth1x)).reduced (0, s (2)));
+    presetBar.setBounds (topStrip.reduced (0, s (2)));
 
-    // Everything below is expressed in plate-local coordinates (the base
-    // @1x table in PluginEditorLayout.h), then offset by the top strip +
-    // gap and scaled - same toPlateRect technique as silentium's editor.
-    const auto toPlateRect = [&] (juce::Rectangle<int> plateLocal)
+    const auto k = plateScale();
+    const auto origin = plateOrigin();
+
+    for (const auto& knob : knobs)
     {
-        return juce::Rectangle<int> (s (plateLocal.getX()),
-                                     s (topStripHeight1x + topStripGap1x) + s (plateLocal.getY()),
-                                     s (plateLocal.getWidth()),
-                                     s (plateLocal.getHeight()));
-    };
+        const auto& entry = *knob.entry;
+        const auto geometry = geometryForKind (entry.kind);
 
-    titleLabel.setBounds (toPlateRect (headerBay1x.withWidth (roundelCentre1x.x - headerBay1x.getX() - roundelRadius1x - 8)));
+        // Bounds sized to EXACTLY the crop canvas at the sprite's drawn
+        // scale, so the rotating cap registers pixel-true on the static
+        // sprite underneath (see MasterCropKnob::cropCanvasSizeFor()).
+        const auto side = (float) basilica::gui::MasterCropKnob::cropCanvasSizeFor (geometry.capRadius)
+                           * entry.scale * k;
 
-    const auto knobDiam = s (knobDiameter1x);
-    const auto labelH = s (knobLabelHeight1x);
-
-    for (size_t i = 0; i < knobLayout.size(); ++i)
-    {
-        auto& entry = knobLayout[i];
-        const auto bay = toPlateRect (bayRectFor (entry.bay));
-        const auto cellW = bay.getWidth() / knobBayCols;
-        const auto cellX = bay.getX() + entry.col * cellW;
-
-        knobs[i].label.setBounds (cellX, bay.getY(), cellW, labelH);
-        knobs[i].slider->setBounds (juce::Rectangle<int> (knobDiam, knobDiam)
-                                        .withCentre ({ cellX + cellW / 2, bay.getY() + labelH + (bay.getHeight() - labelH) / 2 }));
+        knob.slider->setBounds (juce::Rectangle<float> (side, side)
+                                    .withCentre ({ origin.x + entry.cx * k, origin.y + entry.cy * k })
+                                    .getSmallestIntegerContainer());
     }
 
-    const auto irBay = toPlateRect (irLoaderBay1x);
-    const auto halfW = irBay.getWidth() / 2;
-    const auto innerMargin = s (irSlotInnerMargin1x);
-    const auto labelHeight = s (irSlotLabelHeight1x);
-    const auto rowGap = s (irSlotRowGap1x);
-    const auto buttonHeight = s (irSlotButtonHeight1x);
-    const auto buttonGap = s (irSlotButtonGap1x);
-    const auto contentHeight = labelHeight + rowGap + buttonHeight;
-    const auto verticalPad = juce::jmax (0, (irBay.getHeight() - contentHeight) / 2);
-
-    const auto layoutSlot = [&] (IrSlot& slot, int slotX)
+    for (const auto& slot : slots)
     {
-        const auto slotBounds = juce::Rectangle<int> (slotX, irBay.getY(), halfW, irBay.getHeight()).reduced (innerMargin, 0);
+        const auto& entry = *slot->entry;
 
-        slot.nameLabel.setBounds (slotBounds.getX(), slotBounds.getY() + verticalPad, slotBounds.getWidth(), labelHeight);
+        const auto w = slotSpriteWidthPx * entry.scale * k;
+        const auto h = slotSpriteHeightPx * entry.scale * k;
 
-        auto buttonRow = juce::Rectangle<int> (slotBounds.getX(), slotBounds.getY() + verticalPad + labelHeight + rowGap,
-                                                slotBounds.getWidth(), buttonHeight);
+        slot->component->setBounds (juce::Rectangle<float> (w, h)
+                                        .withCentre ({ origin.x + entry.cx * k, origin.y + entry.cy * k })
+                                        .getSmallestIntegerContainer());
+    }
 
-        // Three equal-width buttons per slot: Browse... (the IR browser
-        // overlay), Load IR... (direct file chooser), Default (revert).
-        const auto buttonWidth = (buttonRow.getWidth() - 2 * buttonGap) / 3;
-        slot.browseButton.setBounds (buttonRow.removeFromLeft (buttonWidth));
-        buttonRow.removeFromLeft (buttonGap);
-        slot.loadButton.setBounds (buttonRow.removeFromLeft (buttonWidth));
-        buttonRow.removeFromLeft (buttonGap);
-        slot.defaultButton.setBounds (buttonRow);
-    };
-
-    layoutSlot (irSlotA, irBay.getX());
-    layoutSlot (irSlotB, irBay.getX() + halfW);
-
-    presetIrNoticeLabel.setBounds (toPlateRect (irNoticeStrip1x));
-    presetIrNoticeLabel.setFont (juce::Font (juce::FontOptions {}.withHeight (13.0f * scale)));
+    // Issue #42's notice strip, in plate-local @1x coordinates.
+    presetIrNoticeLabel.setBounds (juce::Rectangle<int> (s (irNoticeStrip1x.getX()),
+                                                         s (topStripHeight1x + topStripGap1x) + s (irNoticeStrip1x.getY()),
+                                                         s (irNoticeStrip1x.getWidth()),
+                                                         s (irNoticeStrip1x.getHeight())));
+    presetIrNoticeLabel.setFont (juce::Font (juce::FontOptions {}.withHeight (13.0f * uiScale)));
 
     // The browser overlay always spans the full editor (it paints its own
     // scrim + centred panel), at every scale step.

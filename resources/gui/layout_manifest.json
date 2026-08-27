@@ -1,0 +1,88 @@
+{
+ "comment": "Wave-3 compositional GUI layout for Nave (rollout-2026-07 + DECISIONS.md D1). Coordinates are plate-render pixels on the 1264x848 wave-2 empty family plate (plate_nave.png). Anchor semantics: knob = brass cap centre, slot = cartridge sprite canvas centre (see src/PluginEditorLayout.h). Census per control-inventory.md: 6 knobs (4+2 rows: tone+character bay over the output bay), 0 toggles (no host-visible bypass param), 0 meters (no metering DSP - no dead decoration), and the two D1 IR cartridge slots side by side between the ornamental top band and the knob field, wired to the REAL IR A/B loaders (gui/IrCartridgeSlot.h documents the operability contract).",
+ "plate": {
+  "asset": "plate_nave_png",
+  "widthPx": 1264,
+  "heightPx": 848
+ },
+ "controls": [
+  {
+   "id": "irSlotA",
+   "kind": "slot",
+   "sprite": "ir_slot_a",
+   "label": "",
+   "cx": 405,
+   "cy": 250,
+   "scale": 0.85
+  },
+  {
+   "id": "irSlotB",
+   "kind": "slot",
+   "sprite": "ir_slot_b",
+   "label": "",
+   "cx": 859,
+   "cy": 250,
+   "scale": 0.85
+  },
+  {
+   "id": "loCut",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "LO CUT",
+   "cx": 407,
+   "cy": 495,
+   "scale": 0.85,
+   "labelCy": 551
+  },
+  {
+   "id": "hiCut",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "HI CUT",
+   "cx": 557,
+   "cy": 495,
+   "scale": 0.85,
+   "labelCy": 551
+  },
+  {
+   "id": "irBlend",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "IR BLEND",
+   "cx": 707,
+   "cy": 495,
+   "scale": 0.85,
+   "labelCy": 551
+  },
+  {
+   "id": "micDistance",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "DISTANCE",
+   "cx": 857,
+   "cy": 495,
+   "scale": 0.85,
+   "labelCy": 551
+  },
+  {
+   "id": "mix",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "MIX",
+   "cx": 542,
+   "cy": 665,
+   "scale": 0.85,
+   "labelCy": 721
+  },
+  {
+   "id": "level",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "LEVEL",
+   "cx": 722,
+   "cy": 665,
+   "scale": 0.85,
+   "labelCy": 721
+  }
+ ]
+}
