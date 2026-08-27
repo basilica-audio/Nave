@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (German translation coverage becomes a measured gate, issue #49)
+
+- **The seven missing German strings** in `resources/i18n/de.txt` — the bundled-IR miss notices from #45 and the #42 preset-reference strings (`IR A`/`IR B`, the singular/plural "made with NAMES" sentences, the slots-left-as-they-were sentence, the join separator, and the could-not-write-out hint). Locked style rules apply (Du-Form); `Browse...`/`Install Library` stay in English because the buttons they name are untranslated UI labels.
+- **`tests/I18nCoverageTests.cpp`: translation coverage measured from the shipped bytes, both directions.** The German side is `BinaryData::de_txt` — the bytes actually compiled into the binary, not the file in the tree (#48's measure-the-bytes pattern); the English side is the `TRANS()` string-literal table extracted from `src/` (`NAVE_SRC_DIR`). A user-facing string without a de entry fails naming the exact string, and a de entry without a source string fails as stale — so coverage cannot silently regress again, in either direction. A second case proves the file loads as a `juce::LocalisedStrings` document and actually translates (JUCE 8.0.14).
+
 ### Added (headline: a bundled IR library, generated rather than sourced)
 
 - **Nine bundled cabinet impulse responses** (`resources/irs/`, issue #33) — five guitar (`4x12 Ceramic Cone`, `4x12 Ceramic Edge`, `4x12 Room 1m`, `2x12 Alnico Cone`, `1x12 Combo Cone`) and four bass (`8x10 Cone`, `8x10 Edge`, `1x15 Vintage`, `4x10 Horn`). Embedded in the plugin and installed on request into `Music/Nave/Impulse Responses` — `IrLibrary::defaultDirectory()`, the folder the IR browser already scans out of the box — and also staged as loose files in the release archive for anyone who would rather place them by hand (see **Install Library** below).
