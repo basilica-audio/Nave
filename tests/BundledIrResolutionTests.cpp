@@ -112,7 +112,7 @@ namespace
         PresetManagerConfig config;
         config.pluginId = "com.yvesvogl.nave";
         config.pluginName = "Nave";
-        config.manufacturerName = "Yves Vogl";
+        config.manufacturerName = "Basilica Audio";
         config.pluginVersion = "0.5.0-test";
         config.userPresetsDirectoryOverrideForTests = userPresetDir;
         return config;
