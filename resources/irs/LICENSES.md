@@ -55,19 +55,25 @@ compared directly against `resources/irs/manifest.json` there.
 ## The library
 
 All nine are mono, 24-bit PCM, 48 kHz. The `−10 dB band` column is read off a
-1/3-octave RMS-smoothed magnitude response; `RT` is a T20-based decay estimate.
+1/3-octave RMS-smoothed magnitude response, referenced to each cabinet's own
+mean level over 100 Hz – 4 kHz rather than to its single highest point: these
+are guitar and bass cabinets, so the highest point is an upper-mid resonance,
+and referencing it would report the width of that resonance instead of the
+cabinet's bandwidth. `RT` is a T20-based decay estimate. Every figure in this
+file is produced by `tools/ir-synth/measure_irs.py`, which CI re-runs against
+the shipped bytes.
 
 | File | Display name | Samples | Length | −10 dB band | RT (T20) | SHA-256 (first 16) |
 |---|---|---|---|---|---|---|
-| `modelled_4x12_ceramic_cone.wav` | Modelled 4x12 Ceramic Cone | 2048 | 42.7 ms | 51 Hz – 5947 Hz | 23.1 ms | `c0c153472cd0568c` |
-| `modelled_4x12_ceramic_edge.wav` | Modelled 4x12 Ceramic Edge | 2048 | 42.7 ms | 51 Hz – 2873 Hz | 25.5 ms | `f5677e4a2d6f0468` |
-| `modelled_4x12_ceramic_room.wav` | Modelled 4x12 Room 1m | 8192 | 170.7 ms | 562 Hz – 3184 Hz | 319.2 ms | `a89cbc98e29378a7` |
-| `modelled_2x12_alnico_cone.wav` | Modelled 2x12 Alnico Cone | 2048 | 42.7 ms | 163 Hz – 6729 Hz | 7.7 ms | `7248ecba47f2bb2a` |
-| `modelled_1x12_combo_cone.wav` | Modelled 1x12 Combo Cone | 2048 | 42.7 ms | 99 Hz – 6475 Hz | 9.9 ms | `937862d8de3a3fdd` |
-| `modelled_8x10_cone.wav` | Modelled 8x10 Cone | 4096 | 85.3 ms | 32 Hz – 4699 Hz | 33.2 ms | `67aa93d0e238e88b` |
-| `modelled_8x10_edge.wav` | Modelled 8x10 Edge | 4096 | 85.3 ms | 34 Hz – 2172 Hz | 34.8 ms | `551d27888c679e86` |
-| `modelled_1x15_vintage.wav` | Modelled 1x15 Vintage | 4096 | 85.3 ms | 34 Hz – 1804 Hz | 63.0 ms | `fd7de6a4fbe4e1fe` |
-| `modelled_4x10_horn.wav` | Modelled 4x10 Horn | 4096 | 85.3 ms | 37 Hz – 3079 Hz | 49.4 ms | `b7e98317d45a340c` |
+| `modelled_4x12_ceramic_cone.wav` | Modelled 4x12 Ceramic Cone | 2048 | 42.7 ms | 44 Hz – 6735 Hz | 23.1 ms | `c0c153472cd0568c` |
+| `modelled_4x12_ceramic_edge.wav` | Modelled 4x12 Ceramic Edge | 2048 | 42.7 ms | 40 Hz – 4589 Hz | 25.5 ms | `f5677e4a2d6f0468` |
+| `modelled_4x12_ceramic_room.wav` | Modelled 4x12 Room 1m | 8192 | 170.7 ms | 57 Hz – 5834 Hz | 319.2 ms | `a89cbc98e29378a7` |
+| `modelled_2x12_alnico_cone.wav` | Modelled 2x12 Alnico Cone | 2048 | 42.7 ms | 90 Hz – 7467 Hz | 7.7 ms | `7248ecba47f2bb2a` |
+| `modelled_1x12_combo_cone.wav` | Modelled 1x12 Combo Cone | 2048 | 42.7 ms | 83 Hz – 7180 Hz | 9.9 ms | `937862d8de3a3fdd` |
+| `modelled_8x10_cone.wav` | Modelled 8x10 Cone | 4096 | 85.3 ms | 26 Hz – 5631 Hz | 33.2 ms | `67aa93d0e238e88b` |
+| `modelled_8x10_edge.wav` | Modelled 8x10 Edge | 4096 | 85.3 ms | 25 Hz – 3837 Hz | 34.8 ms | `551d27888c679e86` |
+| `modelled_1x15_vintage.wav` | Modelled 1x15 Vintage | 4096 | 85.3 ms | 28 Hz – 3763 Hz | 63.0 ms | `fd7de6a4fbe4e1fe` |
+| `modelled_4x10_horn.wav` | Modelled 4x10 Horn | 4096 | 85.3 ms | 31 Hz – 12595 Hz | 49.4 ms | `b7e98317d45a340c` |
 
 ### Guitar cabinets
 
@@ -84,12 +90,21 @@ extra low-pass pole for the cone's directivity, 2 dB less of the 2.45 kHz
 presence peak, and +2 dB at 250 Hz. The darker half of a cone/edge IR Blend.
 
 **Modelled 4x12 Room 1m** (`guitar-412-room`) — the same cabinet at one metre in
-a small tracking room. No proximity rise (a −2 dB low-shelf instead), −2.5 dB of
-air absorption above 6 kHz, four early reflections at 65 / 180 / 240 / 330 cm,
+a small tracking room. No proximity rise in the direct field (a −2 dB low-shelf
+instead), −2.5 dB of air absorption above 6 kHz, four early reflections at
+65 / 180 / 240 / 330 cm,
 and a diffuse tail 14 dB below the direct field, band-limited to 120 Hz – 4 kHz
 and decaying with a 110 ms time constant. The noise for that tail comes from an
 explicitly-seeded 64-bit LCG (seed `0x4E415645`) implemented in the generator
 itself, so the tail is reproducible rather than "some noise".
+
+Measured, the shipped response is not thinner than the close capture: those four
+reflections put back in the low mids roughly what the metre of distance took out
+of the direct field, so the two land within 0.4 dB of each other on a
+80–160 Hz-against-400 Hz–1 kHz proximity index (+2.8 dB here, +2.4 dB for the
+cone). What separates them is time — a T20 of 319 ms against the cone's 23 ms —
+and that is what an IR Blend between them actually controls. Blending the pair
+adds room without thinning the low end.
 
 **Modelled 2x12 Alnico Cone** (`guitar-212-alnico`) — an open-back 2x12 with an
 alnico-magnet voicing. The open back radiates as a dipole, so the low end rolls
@@ -174,13 +189,13 @@ table.
 
 ## Footprint
 
-**132,837 bytes — 129.7 KiB — of embedded assets per architecture slice.**
+**133,840 bytes — 130.7 KiB — of embedded assets per architecture slice.**
 
 | | bytes |
 |---|---|
 | nine `.wav` cabinets | 98,700 |
-| `LICENSES.md` + `CC0-1.0.txt` + `manifest.json` | 34,137 |
-| **total embedded** | **132,837** |
+| `LICENSES.md` + `CC0-1.0.txt` + `manifest.json` | 35,140 |
+| **total embedded** | **133,840** |
 
 The provenance files are embedded, not just committed, because the licensing bar
 is a licence committed *alongside* the audio — an installed copy that left the

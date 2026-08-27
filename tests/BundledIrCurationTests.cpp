@@ -366,8 +366,8 @@ TEST_CASE ("Bundled IR curation: the bundle costs what the documentation says it
     // is a real defect, not a tolerance to widen.
 
     constexpr int expectedAudioBytes = 98700;
-    constexpr int expectedProvenanceBytes = 34137;
-    constexpr int expectedTotalBytes = expectedAudioBytes + expectedProvenanceBytes; // 132,837 = 129.7 KiB
+    constexpr int expectedProvenanceBytes = 35140;
+    constexpr int expectedTotalBytes = expectedAudioBytes + expectedProvenanceBytes; // 133,840 = 130.7 KiB
 
     int audioBytes = 0;
     int provenanceBytes = 0;

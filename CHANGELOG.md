@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (the nine bundled cabinets, measured rather than assumed, issue #47)
+
+- **`tools/ir-synth/measure_irs.py`: the bundled library characterised as a SET.** `verify_irs.py` answers "is each of these files a sound signal"; this answers the questions that only exist because the nine are a library — level match, polarity consistency, whether each pair still differs in the direction its name claims, whether an aligned blend of a pair sums coherently, whether sealed/ported/open-back stay distinguishable on the measurements, and how close any two cabinets are once level-matched. Runs in CI as a gate (`--check`), standard library only, and every threshold carries its derivation in the source rather than being a round number.
+
+  Loudness is evaluated in the frequency domain — `10 log10( Σ S|H|²|K|² / Σ S|K|² )` with K the ITU-R BS.1770-4 weighting re-derived from the same analog prototypes `src/dsp/IrLoudness.cpp` uses — so there is no test signal, no seed and no run-to-run variance, and the script and the plugin agree on what "loudness" means by construction. It is reported against five source spectra because the answer depends on the source, and a conclusion that holds for only one is not a conclusion.
+
+- **`tests/BundledIrVoicingTests.cpp`: the same characterisation, through the plugin's own DSP.** 181 assertions over the shipped bytes, measured with `IrAlignment`, `IrLoudness` and `juce::dsp::FFT` rather than a script's own arithmetic — polarity as the engine detects it, the level spread each gain mode actually leaves, the pair claims, the blend coherence, and each cabinet's −10 dB band, roll-off order and T20 pinned to what it shipped with. ADR-0004 forbids retuning a bundled IR in place because presets resolve by a hash of its bytes; this is the ratchet that turns that rule into a build failure.
+
+### Fixed (issue #47)
+
+- **`resources/irs/LICENSES.md` published a −10 dB band for every cabinet that was read off the response's single highest point.** For a guitar or bass cabinet that point is an upper-mid resonance, so the figures described the width of that resonance rather than the cabinet's bandwidth, and for `guitar-412-room` the search terminated in a reflection comb notch and published a **562 Hz** low corner for an IR that is 1.5 dB down at 125 Hz. All nine bands are now referenced to each cabinet's own 100 Hz – 4 kHz mean on a third-octave-smoothed curve, which is the resolution loudspeaker response is conventionally reported at, and the method is stated in the file. No audio changed; the numbers were wrong, not the cabinets.
+
+- **`guitar-412-room` was documented as having "no proximity rise" and measurably does not.** The direct field does lose it — 2.5 dB of low-mid lift at one metre against the close capture's 4.8 dB — but the model's four early reflections put it back, and the shipped response lands within 0.4 dB of the close capture on an 80–160 Hz-against-400 Hz–1 kHz proximity index. Re-documented in `manifest.json` (through the generator, so the WAV bytes are unchanged and reproducibility holds) and in `LICENSES.md`, where the useful consequence is now stated: what an IR Blend between the pair controls is time, not weight — blending them adds room without thinning the low end.
+
+- **ADR-0004 gave its own footprint two different values**, 129.7 KiB in the Footprint section and 127.2 KiB three paragraphs later in Consequences. The figure is now 130.7 KiB everywhere, updated for the documentation edits above, and still asserted against the bytes actually compiled into the binary.
+
 ### Added (German translation coverage becomes a measured gate, issue #49)
 
 - **The seven missing German strings** in `resources/i18n/de.txt` — the bundled-IR miss notices from #45 and the #42 preset-reference strings (`IR A`/`IR B`, the singular/plural "made with NAMES" sentences, the slots-left-as-they-were sentence, the join separator, and the could-not-write-out hint). Locked style rules apply (Du-Form); `Browse...`/`Install Library` stay in English because the buttons they name are untranslated UI labels.
@@ -30,13 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The provenance files travel with the audio rather than staying behind in the repository, because #33's licensing bar is a licence committed *alongside* the audio; an installed copy without it would not meet the bar it was written for. None of the three is an audio file, so the browser never lists them as cabinets.
 
-  Cost: **+127.2 KiB of embedded assets per architecture slice**, i.e. +278 KiB on the universal macOS VST3 binary (62,217,072 → 62,501,712 bytes) and +294 KiB on the AU.
+  Cost: **+130.7 KiB of embedded assets per architecture slice**, i.e. +278 KiB on the universal macOS VST3 binary (62,217,072 → 62,501,712 bytes) and +294 KiB on the AU.
 
 - **`tests/FactoryIrInstallTests.cpp` and four new IR-browser cases** — that the embedded copy is byte-identical to the verified files in `resources/irs/` (the one failure mode an embedded duplicate introduces: drifting away from the audio that `verify_irs.py` and the committed SHA-256 manifest actually vouch for), that installing into an empty folder produces exactly nine browsable cabinets and three provenance files, that a second install writes nothing, that a truncated *and* a deleted file are both detected and repaired, that an installed cabinet loads through the convolution engine and changes the signal, and that a row from a freshly installed library loads into the target slot through the editor's real browser wiring. Every install in the suite targets a temporary directory — the real `Music` folder is never a destination in a test.
 
 - **The bundled set is a decided set, with a stated stability policy** (`docs/adr/0004-bundled-ir-library-curation.md`, issue #33). Nine cabinets, chosen around **pairs** rather than breadth: `guitar-412-cone` / `-edge` / `-room` is one cabinet in three positions (the close+room pair IR Blend needs and the two-position pair Morph needs), `bass-810-cone` / `-edge` is the same for bass, and the remaining four buy structural variety — sealed vs. ported vs. open-back dipole, cone vs. horn — rather than another 4x12 with different EQ. Nine is a **stopping point, not a target**: generated IRs are nearly free in bytes, which is exactly why the number needs a stated reason to stop, since every extra model is another thing nobody has listened to and another file whose bytes a preset may come to depend on.
 
-  **Documented footprint: 132,837 bytes (129.7 KiB) of embedded assets per architecture slice** — 98,700 bytes of audio plus 34,137 of provenance — asserted against the bytes actually compiled into the binary, with a 256 KiB ceiling so a future addition has to be a deliberate one.
+  **Documented footprint: 133,840 bytes (130.7 KiB) of embedded assets per architecture slice** — 98,700 bytes of audio plus 35,140 of provenance — asserted against the bytes actually compiled into the binary, with a 256 KiB ceiling so a future addition has to be a deliberate one.
 
   **Release policy, made enforceable.** Presets resolve by a hash of an IR's bytes, so: a bundled IR may be **renamed freely** (the digest does not change, no preset notices); it is **never retuned in place** (a retune ships as a new id and a new file, and the old file stays); **removal is a breaking change** for presets and belongs in a major version; and an **id, once shipped, is permanent**. The nine ids are carried as a literal list in `tests/BundledIrCurationTests.cpp`, which is the ratchet that makes the policy a build failure rather than a paragraph.
 

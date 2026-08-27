@@ -98,8 +98,8 @@ buys less than the listening pass below does.
 
 ### Footprint
 
-**132,837 bytes (129.7 KiB) of embedded assets per architecture slice** — 98,700
-bytes of audio (nine mono 24-bit 48 kHz WAVs, 2048–8192 samples) plus 34,137
+**133,840 bytes (130.7 KiB) of embedded assets per architecture slice** — 98,700
+bytes of audio (nine mono 24-bit 48 kHz WAVs, 2048–8192 samples) plus 35,140
 bytes of provenance (`LICENSES.md`, `CC0-1.0.txt`, `manifest.json`), which travel
 with the audio because the licensing bar is a licence committed *alongside* it.
 `tests/BundledIrCurationTests.cpp` pins the figure against the bytes actually
@@ -132,18 +132,69 @@ affects no existing preset.
 
 ### The listening pass
 
-**Not discharged, and deliberately not closed by measurement.** #33's own binding
-language says curation is a listening decision, and #41 states plainly that
-nobody has listened to these. Everything that could be settled without ears has
-been: reproducibility, licensing, labelling, signal properties, load-through-the-
-engine behaviour, and now membership and footprint.
+Scoped as a **revision** gate, not a **ship** gate — the set is defensible on
+structural grounds, is honest about being modelled, and is what makes the
+factory presets audible, so holding a release for it would trade a working
+library for an empty one. Tracked as #47 so that #33 does not stay open forever
+over a question that is not about mechanism.
 
-The listening pass is therefore scoped as a **revision** gate, not a **ship**
-gate. The set above is defensible on structural grounds, is honest about being
-modelled, and is what makes the factory presets audible; holding the release for
-it would trade a working library for an empty one. It is tracked as its own
-issue so that #33 does not stay open forever over a question that is not about
-mechanism.
+**Discharged by measurement wherever measurement is stronger (#47).** Most of
+what the pass would decide is not a matter of taste at all, and for those parts
+a measurement beats a listening session on every axis that matters here: it is
+repeatable, it does not depend on whose monitors it ran through, and it becomes
+a regression test that runs on every commit rather than a memory of an
+afternoon. `tools/ir-synth/measure_irs.py` characterises the nine as a set and
+gates CI on the result; `tests/BundledIrVoicingTests.cpp` pins the same
+properties through the plugin's own reader, `IrLoudness` and `IrAlignment`, so a
+re-bake cannot quietly change what a cabinet sounds like while still producing
+nine files that pass every other gate.
+
+What it found:
+
+* **Polarity is consistent.** All nine present an upright direct arrival, and
+  each reads as upright against its family's reference cabinet through
+  `IrAlignment::measure()`. This is a correctness property rather than a
+  preference: Crossfade blend sums the two convolver branches, so an inverted
+  member of a pair would partially cancel the other, and
+  `MinPhase::estimateBulkDelaySamples()` searches for a **positive**
+  correlation peak, so an inverted IR would hand Morph a meaningless bulk
+  delay.
+* **The pairs pair.** Both `*-edge` cabinets are darker than their `*-cone`
+  partner in the direction an off-axis move implies — 0.55 octaves of −10 dB
+  bandwidth and 6.5–7.2 dB of 2–5 kHz — and `guitar-412-room` decays 13.8×
+  longer than `guitar-412-cone`. An onset-aligned 50/50 blend of each pair
+  sums within 0.30 dB of a perfectly coherent sum, against the 3.0 dB an
+  incoherent sum would cost, so none of the three combs.
+* **Structural variety is real, not just claimed.** The roll-off order at each
+  cabinet's own −3 dB corner separates the three enclosure types with margin:
+  open-back dipole 5.1–8.5 dB/octave (first order, as a dipole must be),
+  sealed 13.4–14.6 (second order), ported 25.4–28.0 (fourth order).
+* **Nothing is truncated audibly.** The Schroeder decay is at least 29 dB down
+  where the generator's raised-cosine fade begins, so the fade shapes under
+  0.12% of any cabinet's energy.
+* **Level match is the one bound the set misses, and no change to these files
+  could fix it.** Within a family, K-weighted loudness against a band-limited
+  pink source spreads 2.1–2.7 dB in Energy mode and 3.7–4.2 dB in Loudness
+  mode, against a 1 dB target derived from the level JND for broadband
+  programme. But a bundled IR's own level never reaches anybody: the engine
+  renormalises at load in both modes, so rescaling the WAVs would change
+  nothing audible while breaking every preset that references them by byte
+  hash. The residual belongs to the gain match, which references a **white**
+  excitation and is therefore exact for white and drifts for any tilted
+  source. That is an engine question, tracked separately; both tests carry the
+  measured spread as a ratchet so it cannot get worse in the meantime.
+* **Two slots are close to their neighbours.** Level-matched, `guitar-112-combo`
+  sits 1.2 dB RMS from `guitar-412-cone` through the mids and highs and differs
+  mainly below 250 Hz (4.2 dB RMS), and `bass-115-vintage` sits 0.6–0.7 dB RMS
+  from `bass-810-edge` below 1.5 kHz. Both still earn their slots — a genuinely
+  different low end is a genuinely different guitar sound, and the two bass
+  cabinets diverge above 1.5 kHz and in enclosure order — but neither buys as
+  much as its row in the membership table implies. Recorded rather than acted
+  on: removing an id is a breaking change for presets.
+
+**What measurement does not close** is whether a cabinet is musically
+convincing in a mix. That judgement stays with #47 and is not a property any
+script can assert.
 
 ### Consequences
 
@@ -151,10 +202,15 @@ mechanism.
   than asserted.
 * Good: the bundled set has a stated membership rationale and a stated stability
   policy, so a future change to it is a decision rather than an accident.
-* Good: 127.2 KiB is a footprint nobody has to think about.
+* Good: 130.7 KiB is a footprint nobody has to think about.
 * Bad: the cabinets are models. They are labelled as such everywhere —
   `modelled_` filenames, "Modelled" display names, both asserted by tests — but a
   user who wants a capture of a specific real cabinet still has to supply it.
-* Bad: the set is unaudited by ear. Any of the nine may turn out to want
-  revoicing, and under the policy above a revoicing ships as a new id rather than
-  as an edit.
+* Bad: the set is still unaudited by ear on the one question measurement cannot
+  answer — whether a cabinet is musically convincing in a mix. Any of the nine
+  may turn out to want revoicing, and under the policy above a revoicing ships
+  as a new id rather than as an edit.
+* Bad: the set is not level-matched to within the ~1 dB the level JND would
+  ask for, and cannot be made so from `resources/irs/` — the fix, if it is
+  taken, is to reference the gain match to a tilted source rather than a white
+  one, which changes an audible behaviour of a shipped parameter mode.
