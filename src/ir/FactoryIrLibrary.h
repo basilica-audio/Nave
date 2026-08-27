@@ -44,6 +44,28 @@ namespace basilica::ir
         const char* fileName = nullptr;
         const char* data = nullptr;
         int dataSize = 0;
+
+        // The cabinet's STABLE IDENTITY, matching the `id` field
+        // resources/irs/manifest.json records for the same file
+        // ("guitar-412-cone"). Null for the provenance files, which are not
+        // cabinets.
+        //
+        // WHAT IT IS FOR, AND WHAT IT IS EMPHATICALLY NOT FOR. This names the
+        // MODEL, not the audio. It is the handle documentation, the manifest,
+        // the release notes and a sibling plugin use to talk about the same
+        // cabinet across releases, and it is the thing #33 requires to survive
+        // a file being renamed.
+        //
+        // It is NEVER a resolution key. Presets resolve by a hash of the
+        // file's BYTES (src/presets/IrReference.h), precisely because an
+        // identity-based id would silently follow a retuned model - the preset
+        // would keep loading, keep looking correct, and quietly recall a
+        // different sound. The two identifiers answer deliberately different
+        // questions: the id asks "which cabinet is this", the digest asks "is
+        // this exactly the audio the preset was made with". See
+        // docs/bundled-ir-library.md for the release policy that keeps both
+        // answers meaningful (in short: rename freely, never retune in place).
+        const char* stableId = nullptr;
     };
 
     namespace FactoryIrLibrary
