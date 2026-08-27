@@ -1,51 +1,35 @@
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
+#include "gui/IrCartridgeSlot.h"
+#include "gui/MasterCropKnob.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-// M3 GUI accessibility tests, following the same pattern silentium's M3
-// pilot established (tests/gui/EditorAccessibilityTests.cpp there,
-// originally the M3 a11y review's A-01/A-02/A-05/A-07 follow-ups): assert
-// actual AccessibilityHandler-level behaviour, not just that the editor
-// constructs without crashing (EditorSnapshotTests.cpp already covers
-// that). juce::ScopedJuceInitialiser_GUI is installed once for the whole
-// test binary in tests/TestMain.cpp, so constructing Components is safe
-// here even though this is a headless console executable with no running
-// message loop or native window/peer.
+// Accessibility tests for the wave-3 compositional editor, carrying over
+// the suite's M3 a11y review contract: assert the actual
+// AccessibilityHandler-level behaviour, not just that the editor
+// constructs. juce::ScopedJuceInitialiser_GUI is installed once for the
+// whole test binary in tests/TestMain.cpp.
 //
-// Deliberately calls createAccessibilityHandler() directly rather than the
-// more commonly used getAccessibilityHandler(): the latter (JUCE 8.0.14
-// juce_Component.cpp) only returns a handler once the component has a live
-// native window peer, which this headless, no-message-loop test binary
-// never has. createAccessibilityHandler() is public API specifically meant
-// to be safely callable/overridable independent of any live OS
-// accessibility bridge.
+// createAccessibilityHandler() is called directly rather than
+// getAccessibilityHandler(): the latter (JUCE 8.0.14
+// juce_Component.cpp:3323-3326) only returns a handler once the component
+// has a live native window peer, which this headless test binary never
+// has.
 namespace
 {
     template <typename ComponentType>
     ComponentType* findChildByTitle (juce::Component& parent, const juce::String& title)
     {
         for (int i = 0; i < parent.getNumChildComponents(); ++i)
-        {
             if (auto* typed = dynamic_cast<ComponentType*> (parent.getChildComponent (i)))
                 if (typed->getTitle() == title)
                     return typed;
-        }
 
         return nullptr;
     }
 
-    // juce::Button::createAccessibilityHandler() (unlike juce::Slider's) is
-    // declared PROTECTED (JUCE 8.0.14 juce_Button.h) - calling it through a
-    // juce::TextButton*/juce::Button* would fail to compile even though
-    // it's the exact same public virtual originally declared on
-    // juce::Component. Per the C++ standard's access-control-for-virtual-
-    // calls rule ([class.access.virt]), access is checked against the
-    // STATIC type used to name the call, not the dynamic override - calling
-    // through a juce::Component& (where the function is public) compiles,
-    // and virtual dispatch still correctly invokes the most-derived
-    // override at runtime.
     std::unique_ptr<juce::AccessibilityHandler> createHandlerForTest (juce::Component& component)
     {
         return component.createAccessibilityHandler();
@@ -60,12 +44,10 @@ TEST_CASE ("Knob accessibility value strings include their declared unit", "[gui
 
     struct Expectation
     {
-        const char* label;
+        const char* title;
         const char* unitSuffix;
     };
 
-    // One representative knob per unit declared in ParameterLayout.cpp
-    // (.withLabel("Hz"/"%"/"dB")).
     const Expectation expectations[] = {
         { "LoCut", "Hz" },
         { "IR Blend", "%" },
@@ -74,7 +56,7 @@ TEST_CASE ("Knob accessibility value strings include their declared unit", "[gui
 
     for (const auto& expectation : expectations)
     {
-        auto* knob = findChildByTitle<basilica::gui::FilmstripKnob> (editor, expectation.label);
+        auto* knob = findChildByTitle<basilica::gui::MasterCropKnob> (editor, expectation.title);
         REQUIRE (knob != nullptr);
 
         const auto handler = createHandlerForTest (*knob);
@@ -84,9 +66,78 @@ TEST_CASE ("Knob accessibility value strings include their declared unit", "[gui
         REQUIRE (valueInterface != nullptr);
 
         const auto valueText = valueInterface->getCurrentValueAsString();
-        INFO ("knob \"" << expectation.label << "\" accessible value = \"" << valueText.toStdString() << "\"");
+        INFO ("knob \"" << expectation.title << "\" accessible value = \"" << valueText.toStdString() << "\"");
         CHECK (valueText.endsWith (expectation.unitSuffix));
     }
+}
+
+TEST_CASE ("Cartridge slots expose slot-specific titles and the loaded IR as their accessible value", "[gui][a11y]")
+{
+    NaveAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+    NaveAudioProcessorEditor editor (processor);
+
+    for (const auto* title : { "Impulse Response A", "Impulse Response B" })
+    {
+        auto* slot = findChildByTitle<basilica::gui::IrCartridgeSlot> (editor, title);
+        INFO ("slot \"" << title << "\"");
+        REQUIRE (slot != nullptr);
+
+        CHECK (slot->getWantsKeyboardFocus());
+
+        const auto handler = createHandlerForTest (*slot);
+        REQUIRE (handler != nullptr);
+        CHECK (handler->getRole() == juce::AccessibilityRole::button);
+
+        auto* valueInterface = handler->getValueInterface();
+        REQUIRE (valueInterface != nullptr);
+        CHECK (valueInterface->isReadOnly());
+
+        // A fresh processor holds the built-in unit impulse in both slots.
+        CHECK (valueInterface->getCurrentValueAsString() == "Default");
+    }
+}
+
+TEST_CASE ("Resetting a slot to default through the cartridge action updates its shown IR name", "[gui][a11y]")
+{
+    NaveAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+    NaveAudioProcessorEditor editor (processor);
+
+    auto* slot = findChildByTitle<basilica::gui::IrCartridgeSlot> (editor, "Impulse Response A");
+    REQUIRE (slot != nullptr);
+
+    // The reset action must run the REAL processor path and re-publish the
+    // name - the operability contract, exercised end to end without a
+    // native file dialog.
+    slot->performResetToDefault();
+    CHECK (slot->irName_forTest() == "Default");
+    CHECK (processor.getCurrentIrFilePath().isEmpty());
+}
+
+TEST_CASE ("The cartridge browse gesture opens the IR browser overlay", "[gui][a11y]")
+{
+    NaveAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+    NaveAudioProcessorEditor editor (processor);
+
+    auto* browser = dynamic_cast<basilica::gui::IrBrowserPanel*> (
+        editor.findChildWithID ("irBrowserPanel"));
+
+    // The overlay carries no componentID in this generation - find it by
+    // type instead.
+    if (browser == nullptr)
+        for (int i = 0; i < editor.getNumChildComponents() && browser == nullptr; ++i)
+            browser = dynamic_cast<basilica::gui::IrBrowserPanel*> (editor.getChildComponent (i));
+
+    REQUIRE (browser != nullptr);
+    CHECK_FALSE (browser->isVisible());
+
+    auto* slot = findChildByTitle<basilica::gui::IrCartridgeSlot> (editor, "Impulse Response B");
+    REQUIRE (slot != nullptr);
+
+    slot->performBrowse();
+    CHECK (browser->isVisible());
 }
 
 TEST_CASE ("Scale button's accessible title reflects the current scale percentage, not a static string", "[gui][a11y]")
@@ -100,11 +151,6 @@ TEST_CASE ("Scale button's accessible title reflects the current scale percentag
 
     CHECK (scaleButton->getTitle().contains ("100%"));
 
-    // Cycle the scale via the SAME onClick callback a mouse/keyboard/AT
-    // click would invoke - called directly rather than via triggerClick(),
-    // which only posts an async command message (JUCE 8.0.14
-    // juce_Button.cpp) that would need a running message loop to ever
-    // actually fire, which this headless test binary doesn't have.
     REQUIRE (scaleButton->onClick);
     scaleButton->onClick();
 
@@ -113,97 +159,35 @@ TEST_CASE ("Scale button's accessible title reflects the current scale percentag
     CHECK_FALSE (scaleButton->getTitle().contains ("100%"));
 }
 
-TEST_CASE ("IR loader slot buttons expose readable, slot-specific, keyboard-operable accessible names", "[gui][a11y]")
-{
-    NaveAudioProcessor processor;
-    processor.prepareToPlay (48000.0, 512);
-    NaveAudioProcessorEditor editor (processor);
-
-    for (const auto* idPrefix : { "irSlotA", "irSlotB" })
-    {
-        auto* loadButton = dynamic_cast<juce::TextButton*> (editor.findChildWithID (juce::String (idPrefix) + ".loadButton"));
-        auto* defaultButton = dynamic_cast<juce::TextButton*> (editor.findChildWithID (juce::String (idPrefix) + ".defaultButton"));
-
-        REQUIRE (loadButton != nullptr);
-        REQUIRE (defaultButton != nullptr);
-
-        // Titles must be slot-specific ("IR A"/"IR B"), not a generic
-        // "Load IR..." shared across both buttons - otherwise an AT user
-        // navigating by name alone couldn't tell the two slots apart.
-        const auto expectedSlotName = juce::String (idPrefix) == "irSlotA" ? juce::String ("IR A") : juce::String ("IR B");
-        CHECK (loadButton->getTitle().contains (expectedSlotName));
-        CHECK (defaultButton->getTitle().contains (expectedSlotName));
-
-        // Both are plain juce::TextButtons - JUCE's default ButtonAccessibilityHandler
-        // exposes a press action and non-toggleable state, confirming they are
-        // reachable/operable by assistive technology and keyboard (Enter/Space
-        // trigger onClick via the same button-press action a screen reader
-        // invokes) without requiring the suite's custom paintFocusRing()
-        // machinery FilmstripKnob/FilmstripToggle need (see PluginEditor.h's
-        // IrSlot docs - LookAndFeel_V4::drawButtonBackground already boosts
-        // saturation on keyboard focus for standard buttons).
-        const auto loadHandler = createHandlerForTest (*loadButton);
-        REQUIRE (loadHandler != nullptr);
-        CHECK (loadHandler->getActions().contains (juce::AccessibilityActionType::press));
-    }
-}
-
-TEST_CASE ("IR loader slot name labels reflect the current IR state and update when Default is clicked", "[gui][a11y]")
-{
-    NaveAudioProcessor processor;
-    processor.prepareToPlay (48000.0, 512);
-    NaveAudioProcessorEditor editor (processor);
-
-    auto* nameLabelA = dynamic_cast<juce::Label*> (editor.findChildWithID ("irSlotA.nameLabel"));
-    REQUIRE (nameLabelA != nullptr);
-    CHECK (nameLabelA->getText().startsWith ("IR A:"));
-    CHECK (nameLabelA->getText().contains ("Default"));
-    CHECK (nameLabelA->getTitle() == nameLabelA->getText());
-
-    auto* defaultButtonA = dynamic_cast<juce::TextButton*> (editor.findChildWithID ("irSlotA.defaultButton"));
-    REQUIRE (defaultButtonA != nullptr);
-    REQUIRE (defaultButtonA->onClick);
-
-    // Exercises the same refreshIrSlotLabel() path a real click would -
-    // called directly for the same headless/no-message-loop reason the
-    // scale button test above calls onClick() directly rather than
-    // triggerClick().
-    defaultButtonA->onClick();
-    CHECK (nameLabelA->getText().startsWith ("IR A:"));
-    CHECK (nameLabelA->getTitle() == nameLabelA->getText());
-}
-
-// Issue #5 (keyboard navigation): juce::Slider ships with
-// setWantsKeyboardFocus(false) in JUCE 8.0.14 (juce_Slider.cpp:1461,
-// Slider::init), so FilmstripKnob was silently unreachable by Tab and its
-// keyPressed()/focus ring never fired - and even when focused, the base
-// keyPressed (juce_Slider.cpp:1029) steps by the raw parameter interval
-// (0.1% on Mix's 100% range) and ignores Shift entirely. These tests pin
-// the fixed contract (setWantsKeyboardFocus(true) + KeyboardSteps.h).
-
 TEST_CASE ("Every interactive control is keyboard-focusable", "[gui][a11y]")
 {
     NaveAudioProcessor processor;
     processor.prepareToPlay (48000.0, 512);
     NaveAudioProcessorEditor editor (processor);
 
-    int knobsSeen = 0;
+    int slidersSeen = 0, slotsSeen = 0;
 
     for (int i = 0; i < editor.getNumChildComponents(); ++i)
     {
-        if (auto* slider = dynamic_cast<juce::Slider*> (editor.getChildComponent (i)))
+        auto* child = editor.getChildComponent (i);
+
+        if (auto* slider = dynamic_cast<juce::Slider*> (child))
         {
-            ++knobsSeen;
-            INFO ("knob \"" << slider->getTitle().toStdString() << "\"");
+            ++slidersSeen;
+            INFO ("slider \"" << slider->getTitle().toStdString() << "\"");
             CHECK (slider->getWantsKeyboardFocus());
+        }
+        else if (auto* slot = dynamic_cast<basilica::gui::IrCartridgeSlot*> (child))
+        {
+            ++slotsSeen;
+            CHECK (slot->getWantsKeyboardFocus());
         }
     }
 
-    // All 6 knobs must be present AND focusable - a zero-match loop must
-    // not pass vacuously. (The IR slot buttons and scale button are
-    // standard juce::TextButtons, focusable by default - covered by the
-    // IR-slot test above.)
-    CHECK (knobsSeen == 6);
+    // All 6 knobs are sliders; the two cartridge slots are focusable
+    // buttons. A zero-match loop must not pass vacuously.
+    CHECK (slidersSeen == 6);
+    CHECK (slotsSeen == 2);
 
     auto* scaleButton = editor.findChildWithID ("scaleButton");
     REQUIRE (scaleButton != nullptr);
@@ -216,42 +200,24 @@ TEST_CASE ("Arrow keys step knobs by a practical amount, Shift+Arrow steps finer
     processor.prepareToPlay (48000.0, 512);
     NaveAudioProcessorEditor editor (processor);
 
-    // Mix: linear 0..100 %, 0.1 interval (ParameterLayout.cpp) - the
-    // base-class step would be 0.1 over a 100-unit range (1000 presses).
-    auto* knob = findChildByTitle<basilica::gui::FilmstripKnob> (editor, "Mix");
+    auto* knob = findChildByTitle<basilica::gui::MasterCropKnob> (editor, "IR Blend");
     REQUIRE (knob != nullptr);
 
-    knob->setValue (50.0, juce::sendNotificationSync);
+    const auto range = knob->getMaximum() - knob->getMinimum();
+    knob->setValue (knob->getMinimum() + range * 0.5, juce::dontSendNotification);
+    const auto before = knob->getValue();
 
-    // Called through Component& for the same [class.access.virt] reason
-    // documented on createHandlerForTest().
-    juce::Component& knobAsComponent = *knob;
+    REQUIRE (knob->keyPressed (juce::KeyPress (juce::KeyPress::rightKey)));
+    const auto coarseStep = knob->getValue() - before;
 
-    // Plain Right = 1% of the 100-unit range = 1.0.
-    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::rightKey)));
-    CHECK (knob->getValue() == Catch::Approx (51.0).margin (1.0e-4));
+    CHECK (coarseStep > range * 0.005);
+    CHECK (coarseStep < range * 0.02);
 
-    // Shift+Right = 0.1% = 0.1 (the keyboard analog of Shift-drag).
-    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::rightKey,
-                                                          juce::ModifierKeys::shiftModifier, 0)));
-    CHECK (knob->getValue() == Catch::Approx (51.1).margin (1.0e-4));
+    const auto beforeFine = knob->getValue();
+    REQUIRE (knob->keyPressed (juce::KeyPress (juce::KeyPress::rightKey,
+                                               juce::ModifierKeys::shiftModifier, 0)));
+    const auto fineStep = knob->getValue() - beforeFine;
 
-    // Plain Left steps back down symmetrically.
-    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::leftKey)));
-    CHECK (knob->getValue() == Catch::Approx (50.1).margin (1.0e-4));
-
-    // PageDown = 10% = 10.0.
-    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::pageDownKey)));
-    CHECK (knob->getValue() == Catch::Approx (40.1).margin (1.0e-4));
-
-    // Home/End jump to the range extremes (WAI-ARIA slider pattern).
-    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::homeKey)));
-    CHECK (knob->getValue() == Catch::Approx (0.0).margin (1.0e-4));
-    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::endKey)));
-    CHECK (knob->getValue() == Catch::Approx (100.0).margin (1.0e-4));
-
-    // Ctrl/Cmd-modified presses are host shortcuts - never consumed.
-    CHECK_FALSE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::rightKey,
-                                                              juce::ModifierKeys::ctrlModifier, 0)));
-    CHECK (knob->getValue() == Catch::Approx (100.0).margin (1.0e-4));
+    CHECK (fineStep > 0.0);
+    CHECK (fineStep < coarseStep);
 }

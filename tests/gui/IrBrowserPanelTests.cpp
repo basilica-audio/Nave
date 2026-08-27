@@ -2,6 +2,7 @@
 #include "PluginProcessor.h"
 #include "../TestHelpers.h"
 #include "gui/IrBrowserPanel.h"
+#include "gui/IrCartridgeSlot.h"
 #include "ir/FactoryIrLibrary.h"
 #include "ir/IrLibrary.h"
 #include "params/ParameterIds.h"
@@ -46,9 +47,27 @@ namespace
             return file;
         }
 
-        juce::TextButton* browseButtonFor (const juce::String& idPrefix)
+        // Wave-3: the D1 cartridge slot component replaced the old
+        // Browse.../Load IR.../Default button row - its browse gesture is
+        // the overlay's entry point (see gui/IrCartridgeSlot.h).
+        basilica::gui::IrCartridgeSlot* slotComponentFor (const juce::String& idPrefix)
         {
-            return dynamic_cast<juce::TextButton*> (editor->findChildWithID (idPrefix + ".browseButton"));
+            const auto title = idPrefix == "irSlotA" ? juce::String ("Impulse Response A")
+                                                     : juce::String ("Impulse Response B");
+
+            for (int i = 0; i < editor->getNumChildComponents(); ++i)
+                if (auto* slot = dynamic_cast<basilica::gui::IrCartridgeSlot*> (editor->getChildComponent (i)))
+                    if (slot->getTitle() == title)
+                        return slot;
+
+            return nullptr;
+        }
+
+        void browseFromSlot (const juce::String& idPrefix)
+        {
+            auto* slot = slotComponentFor (idPrefix);
+            REQUIRE (slot != nullptr);
+            slot->performBrowse();
         }
 
         struct TempRoot
@@ -74,24 +93,24 @@ namespace
     };
 }
 
-TEST_CASE ("Each IR slot has a keyboard-operable Browse button with a slot-specific accessible name", "[gui][a11y][ir-browser]")
+TEST_CASE ("Each IR slot is a keyboard-operable cartridge with a slot-specific accessible name", "[gui][a11y][ir-browser]")
 {
     BrowserFixture fixture;
 
     for (const auto* idPrefix : { "irSlotA", "irSlotB" })
     {
-        auto* browseButton = fixture.browseButtonFor (idPrefix);
-        REQUIRE (browseButton != nullptr);
+        auto* slot = fixture.slotComponentFor (idPrefix);
+        REQUIRE (slot != nullptr);
 
-        const auto expectedSlotName = juce::String (idPrefix) == "irSlotA" ? juce::String ("IR A")
-                                                                           : juce::String ("IR B");
-        CHECK (browseButton->getTitle().contains (expectedSlotName));
+        const auto expectedSlotName = juce::String (idPrefix) == "irSlotA"
+                                          ? juce::String ("Impulse Response A")
+                                          : juce::String ("Impulse Response B");
+        CHECK (slot->getTitle() == expectedSlotName);
 
-        // Standard juce::TextButton: focusable by default and exposing a
-        // press action to AT/keyboard, same contract the Load/Default
-        // buttons already pin in EditorAccessibilityTests.cpp.
-        CHECK (browseButton->getWantsKeyboardFocus());
-        REQUIRE (browseButton->onClick);
+        // Focusable, and its browse callback (the overlay's entry point,
+        // triggered by click/Return/Space/AT-press) is wired.
+        CHECK (slot->getWantsKeyboardFocus());
+        REQUIRE (slot->onBrowse);
     }
 }
 
@@ -101,14 +120,14 @@ TEST_CASE ("Browse opens the overlay above the faceplate, titled for the clicked
 
     CHECK_FALSE (fixture.panel->isVisible());
 
-    fixture.browseButtonFor ("irSlotB")->onClick();
+    fixture.browseFromSlot ("irSlotB");
 
     CHECK (fixture.panel->isVisible());
     CHECK (fixture.panel->getTitle().contains ("IR B"));
     CHECK (fixture.panel->getBounds() == fixture.editor->getLocalBounds());
 
     // Re-opening for the other slot retargets the same panel instance.
-    fixture.browseButtonFor ("irSlotA")->onClick();
+    fixture.browseFromSlot ("irSlotA");
     CHECK (fixture.panel->getTitle().contains ("IR A"));
 }
 
@@ -119,7 +138,7 @@ TEST_CASE ("Selecting a row auditions it into the target slot; Return loads and 
     const auto irOne = fixture.makeIrFile ("cabs/one.wav");
     const auto irTwo = fixture.makeIrFile ("cabs/two.wav");
 
-    fixture.browseButtonFor ("irSlotA")->onClick();
+    fixture.browseFromSlot ("irSlotA");
 
     // Deterministic seam for the async scan (see file-header comment).
     fixture.panel->applyScanResults ({ irOne, irTwo }, fixture.libraryRoot.root);
@@ -151,7 +170,7 @@ TEST_CASE ("Browser loads into IR B when opened from slot B", "[gui][ir-browser]
 
     const auto ir = fixture.makeIrFile ("b-cab.wav");
 
-    fixture.browseButtonFor ("irSlotB")->onClick();
+    fixture.browseFromSlot ("irSlotB");
     fixture.panel->applyScanResults ({ ir }, fixture.libraryRoot.root);
 
     fixture.fileList->selectRow (0);
@@ -159,11 +178,12 @@ TEST_CASE ("Browser loads into IR B when opened from slot B", "[gui][ir-browser]
     CHECK (fixture.processor.getCurrentIrFilePathB() == ir.getFullPathName());
     CHECK (fixture.processor.getCurrentIrFilePath().isEmpty());
 
-    // The slot's name label reflects the browsed load, exactly as it does
-    // for the direct file-chooser path.
-    auto* nameLabelB = dynamic_cast<juce::Label*> (fixture.editor->findChildWithID ("irSlotB.nameLabel"));
-    REQUIRE (nameLabelB != nullptr);
-    CHECK (nameLabelB->getText().contains ("b-cab.wav"));
+    // The slot's cartridge window reflects the browsed load, exactly as it
+    // does for the direct file-chooser path (name shown without extension -
+    // the smoked-glass window is a display, not a path field).
+    auto* slotB = fixture.slotComponentFor ("irSlotB");
+    REQUIRE (slotB != nullptr);
+    CHECK (slotB->irName_forTest().contains ("b-cab"));
 }
 
 TEST_CASE ("The filter narrows the listing case-insensitively and the status text reports it", "[gui][ir-browser]")
@@ -173,7 +193,7 @@ TEST_CASE ("The filter narrows the listing case-insensitively and the status tex
     const auto mesa = fixture.makeIrFile ("Mesa 4x12.wav");
     fixture.makeIrFile ("Ampeg 8x10.wav");
 
-    fixture.browseButtonFor ("irSlotA")->onClick();
+    fixture.browseFromSlot ("irSlotA");
     fixture.panel->applyScanResults ({ fixture.libraryRoot.root.getChildFile ("Ampeg 8x10.wav"), mesa },
                                      fixture.libraryRoot.root);
     REQUIRE (fixture.panel->getNumVisibleFiles() == 2);
@@ -201,7 +221,7 @@ TEST_CASE ("Escape dismisses the browser", "[gui][a11y][ir-browser]")
 {
     BrowserFixture fixture;
 
-    fixture.browseButtonFor ("irSlotA")->onClick();
+    fixture.browseFromSlot ("irSlotA");
     REQUIRE (fixture.panel->isVisible());
 
     juce::Component& panelAsComponent = *fixture.panel;
@@ -213,7 +233,7 @@ TEST_CASE ("Choosing a library folder persists it to the plugin state and it is 
 {
     BrowserFixture fixture;
 
-    fixture.browseButtonFor ("irSlotA")->onClick();
+    fixture.browseFromSlot ("irSlotA");
 
     // Drive the folder change through the same public path the (native,
     // async) directory chooser callback uses.
@@ -225,7 +245,7 @@ TEST_CASE ("Choosing a library folder persists it to the plugin state and it is 
     // Reopening reads the stored folder back out of the state - visible via
     // the folder label the panel shows.
     fixture.panel->keyPressed (juce::KeyPress (juce::KeyPress::escapeKey));
-    fixture.browseButtonFor ("irSlotB")->onClick();
+    fixture.browseFromSlot ("irSlotB");
 
     auto* folderLabel = dynamic_cast<juce::Label*> (fixture.panel->findChildWithID ("irBrowser.folderLabel"));
     REQUIRE (folderLabel != nullptr);
@@ -239,7 +259,7 @@ TEST_CASE ("Open browser overlay renders non-blank over the faceplate (snapshot 
     fixture.makeIrFile ("Mesa 4x12 SM57 cap edge.wav");
     fixture.makeIrFile ("Ampeg 8x10 R121 1m.wav");
 
-    fixture.browseButtonFor ("irSlotA")->onClick();
+    fixture.browseFromSlot ("irSlotA");
     fixture.panel->applyScanResults ({ fixture.libraryRoot.root.getChildFile ("Ampeg 8x10 R121 1m.wav"),
                                        fixture.libraryRoot.root.getChildFile ("Mesa 4x12 SM57 cap edge.wav") },
                                      fixture.libraryRoot.root);
@@ -279,7 +299,7 @@ TEST_CASE ("Browser rows expose their display names to accessibility clients", "
 
     const auto ir = fixture.makeIrFile ("rooms/close.wav");
 
-    fixture.browseButtonFor ("irSlotA")->onClick();
+    fixture.browseFromSlot ("irSlotA");
     fixture.panel->applyScanResults ({ ir }, fixture.libraryRoot.root);
 
     // getNameForRow() (the ListBox accessibility name source, JUCE 8.0.14
@@ -392,7 +412,7 @@ TEST_CASE ("A cabinet from a freshly installed library loads into the target slo
     const auto scanned = basilica::ir::IrLibrary::scan (fixture.libraryRoot.root);
     REQUIRE (scanned.size() == 9);
 
-    fixture.browseButtonFor ("irSlotA")->onClick();
+    fixture.browseFromSlot ("irSlotA");
     fixture.panel->applyScanResults (scanned, fixture.libraryRoot.root);
 
     REQUIRE (fixture.panel->getNumVisibleFiles() == 9);

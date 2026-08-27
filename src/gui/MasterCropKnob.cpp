@@ -46,7 +46,7 @@ namespace basilica::gui
         // faint (~4%) sliver would otherwise survive right at the crop's
         // own edge. The margin guarantees a genuinely fully-transparent
         // border ring exists within the canvas.
-        const auto canvasSize = juce::jmax (2, (int) std::ceil (outerRadius * 2.0f) + 2);
+        const auto canvasSize = cropCanvasSizeFor (radiusPx, contentFraction);
 
         juce::Image crop (juce::Image::ARGB, canvasSize, canvasSize, true);
 

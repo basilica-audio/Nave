@@ -2,6 +2,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <cmath>
+
 // Suite-reusable rotary knob backed by a feathered circular CROP of the
 // design's own master render, rotated live via juce::AffineTransform -
 // generalises basilica-audio/silentium's v0.3.9 "item 4" INNER-DISC
@@ -67,6 +69,20 @@ namespace basilica::gui
         // real per-pixel work), never called from paint()/the audio thread.
         static juce::Image buildFeatheredCrop (const juce::Image& masterImage, juce::Point<float> centreInMasterPx,
                                                float radiusPx, float contentFraction, float featherFraction = 0.12f);
+
+        // The crop canvas's pixel side length for a given knob radius -
+        // the same formula buildFeatheredCrop() sizes its canvas with,
+        // exposed so the editor can size this component's bounds to
+        // EXACTLY canvasSize * (source-px -> screen-px scale). The wave-3
+        // compositional editors need that: their static knob sprite is
+        // drawn underneath at a known scale, and any mismatch between the
+        // crop's drawn scale and the sprite's drawn scale would show as a
+        // visible ring seam at the crop's feathered edge.
+        static int cropCanvasSizeFor (float radiusPx, float contentFraction = 0.94f) noexcept
+        {
+            const auto outerRadius = juce::jmax (1.0f, radiusPx * contentFraction);
+            return juce::jmax (2, (int) std::ceil (outerRadius * 2.0f) + 2);
+        }
 
     private:
         juce::Image cropImage;
