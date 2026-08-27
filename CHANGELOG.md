@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Plugin metadata now carries the vendor URL, the copyright string, a real description and
+  the VST3 sub-category.** `COMPANY_WEBSITE`, `COMPANY_COPYRIGHT` and `DESCRIPTION` were never
+  set, so a shipped bundle carried an empty `NSHumanReadableCopyright`, an empty VST3 vendor
+  URL, and an AU `description` that was just the plugin name again; `VST3_CATEGORIES` fell back
+  to JUCE's bare `Fx` default, which filed every plugin in the suite under the same
+  undifferentiated heading in a VST3 host's browser. Nave now declares
+  `Fx Filter` (JUCE 8.0.14, `juce_add_plugin`). **Plugin identity is unchanged** — the VST3 class
+  ID is derived from `PLUGIN_MANUFACTURER_CODE` + `PLUGIN_CODE` alone
+  (`juce_VST3ModuleInfo.h`'s `VST3Interface::jucePluginId`) and the AU type/subtype/manufacturer
+  triple is untouched, so existing sessions keep resolving to the same plugin.
+
+### Fixed
+
+- **The manual's caveat list no longer says the binaries are unsigned.** macOS release
+  bundles are Developer-ID-signed, notarised and stapled; Windows is not yet
+  Authenticode-signed, which is what the caveat now says.
+- **The README no longer tells users the binaries do not exist.** The Installation section
+  said *"No pre-built binaries are published yet"* while the banner four lines above it linked
+  the Releases page, and the banner in turn described the macOS builds as *"currently
+  unsigned"*. Both claims were false. The Installation section now describes the actual
+  download-and-copy flow, and the banner states what the release workflow actually produces:
+  verified against the shipped `v0.5.0` `.component` with `codesign --verify --strict`
+  (`Developer ID Application: Yves Vogl (M5WT732AY5)`), `spctl -a -t open`
+  (`source=Notarized Developer ID`) and `stapler validate`.
+- **The documented factory-preset count matches what ships** (8 -> 10); `presets/factory/` holds 10.
+
+### Added
+
+- **A `Documentation` section in the README** pointing at the user manual, the factory-preset
+  reference, the changelog and the product page — the manual was only reachable from a
+  sentence in the middle of the Signal flow section.
+
 ### Added (the nine bundled cabinets, measured rather than assumed, issue #47)
 
 - **`tools/ir-synth/measure_irs.py`: the bundled library characterised as a SET.** `verify_irs.py` answers "is each of these files a sound signal"; this answers the questions that only exist because the nine are a library — level match, polarity consistency, whether each pair still differs in the direction its name claims, whether an aligned blend of a pair sums coherently, whether sealed/ported/open-back stay distinguishable on the measurements, and how close any two cabinets are once level-matched. Runs in CI as a gate (`--check`), standard library only, and every threshold carries its derivation in the source rather than being a round number.

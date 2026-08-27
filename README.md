@@ -7,7 +7,7 @@
 [![CI](https://github.com/basilica-audio/nave/actions/workflows/ci.yml/badge.svg)](https://github.com/basilica-audio/nave/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-> **Work in progress.** Nave is pre-1.0 and under active development. Binaries for macOS and Windows are available from the [Releases](../../releases) page (currently unsigned — see the release notes); building from source works too. Expect breaking changes until v1.0.0 ships (see [Roadmap](#roadmap)).
+> **Work in progress.** Nave is pre-1.0 and under active development. Binaries for macOS and Windows are available from the [Releases](../../releases) page (macOS builds are signed with a Developer ID certificate, notarized and stapled); building from source works too. Expect breaking changes until v1.0.0 ships (see [Roadmap](#roadmap)).
 
 <!-- ==BEGIN BODY== (plugin engineer: replace this block with What it is / Features / Signal flow / Roadmap) -->
 ## What it is
@@ -20,7 +20,7 @@ Nave is a cabinet impulse-response (IR) loader built on JUCE 8, aimed at reampin
 - **IR Blend** - crossfades between IR A and IR B (e.g. two cabs, or two mic positions on the same cab), with automatic inter-IR phase alignment so blending never introduces comb-filtering from a timing mismatch between the two IRs
 - **Zero-latency convolution** - `juce::dsp::Convolution`'s zero-latency uniformly partitioned algorithm for both IR slots, so Nave never adds plugin delay compensation overhead
 - **Distance** - simulated mic-to-cab distance (a front-loaded proximity-effect bass cut plus high-frequency darkening - driven far more by loudspeaker directivity than literal air absorption at reamping distances - as the value increases); an explicit "off" position at its default
-- **Presets** - 8 factory presets plus full user preset save/load/import/export (single files and zip banks), with German frame-string localisation
+- **Presets** - 10 factory presets plus full user preset save/load/import/export (single files and zip banks), with German frame-string localisation
 - **LoCut** - post-convolution high-pass, 20 Hz - 800 Hz (default 20 Hz, an explicit "off"/bypassed position), removes low-end mud
 - **HiCut** - post-convolution low-pass, 2 kHz - 20 kHz (default 20 kHz, also an explicit "off" position), tames fizz
 - **Mix** - dry/wet, default 100% (fully wet) - a cabinet IR is normally run fully in the signal path
@@ -64,9 +64,16 @@ Full musical context and usage tips: [`docs/manual.md`](docs/manual.md).
 | M4 | Release - code signing, notarization, installers, v1.0.0 | Planned |
 <!-- ==END BODY== -->
 
+## Documentation
+
+- [`docs/manual.md`](docs/manual.md) — the user manual: what every control does, and how to use it
+- [`docs/presets.md`](docs/presets.md) — what each factory preset is for
+- [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each release
+- [Nave on basilica-audio.github.io](https://basilica-audio.github.io/website/nave/) — the product page (English and German)
+
 ## Installation
 
-No pre-built binaries are published yet (see the work-in-progress notice above). Once releases begin, installation will follow the standard plugin locations:
+Download the archive for your platform from the [Releases](../../releases) page and copy the bundles into the standard plugin locations:
 
 **macOS**
 
