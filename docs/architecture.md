@@ -83,6 +83,23 @@ The currently loaded IR files' absolute paths are **not** `AudioProcessorValueTr
 
 `setStateInformation()` reads the restored `irFilePathProperty` after `apvts.replaceState()` and, if it points at a file that still exists, calls `loadImpulseResponseFromFile()` again to bring IR A's loaded IR back in sync with the restored state (falling back to `loadDefaultImpulseResponse()` if the stored path is empty or the file no longer exists); it then does the same for IR B via `irFilePathBProperty`/`loadImpulseResponseFromFileB()`/`loadDefaultImpulseResponseB()`. IR A is always restored first, so it becomes the phase-alignment reference IR B is loaded against - matching how the two are loaded during normal interactive use.
 
+## Resolving a preset's IR reference
+
+A preset records the SHA-256 of the IR in each slot (`src/presets/IrReference.h`, issue #42). `NaveAudioProcessor::resolveIrReference()` answers "where do I get the bytes with this digest", and its result type is **total** — every digest a preset can carry lands on exactly one of `notReferenced`, `alreadyLoaded`, `library`, `bundled` or `notFound`, and the file it hands back is a real, existing file or nothing at all. There is no path that leaves a caller guessing what happened to a slot.
+
+Two sources are consulted, in order (issue #45):
+
+1. `IrContentIndex` (`src/ir/IrContentIndex.{h,cpp}`) — the user's IR search roots: the folder the browser is pointed at, then `IrLibrary::defaultDirectory()`. It scans and hashes, caching digests per file by size and modification time.
+2. `BundledIrSource` (`src/ir/BundledIrSource.{h,cpp}`) — the nine cabinets compiled into the binary, indexed by the SHA-256 of their embedded bytes at first use.
+
+**The ordering is not a tie-break between two sounds.** A digest can only match bytes equal to it, so when both sources hold a reference they hold the same audio; what the ordering decides is which *file* the slot ends up pointing at. The user's own copy wins because it is the one they can see in the browser, replace, move or audition.
+
+**The embedded source does not decode anything.** `BundledIrSource::materialise()` writes the asset out to `IrLibrary::bundledCacheDirectory()` (via `FactoryIrLibrary::installInto()`, so it cannot drift from what **Install Library** produces) and the caller then loads that file through the ordinary `loadImpulseResponseFromFile()`. This is deliberate: a second decode path is a second thing to keep correct, and the classic failure is one path acquiring a normalisation or a sample-rate conversion the other lacks, so that a preset sounds subtly different depending on whether the library happens to be installed. Materialising also keeps `ParamIDs::irFilePathProperty` an honest absolute path to a file that really holds those bytes, so `capturePresetIrReferences()` re-derives the same digest on a re-save and `restoreImpulseResponsesFromState()` can still find the audio.
+
+**The cache directory is not the library directory, and is never scanned.** `IrLibrary::bundledCacheDirectory()` is `<user app data>/Basilica Audio/Nave/Bundled Impulse Responses` (on macOS, `~/Library/Application Support/...` — JUCE 8.0.14 maps `userApplicationDataDirectory` to `~/Library`, so the `Application Support` component is added explicitly). Writing into `IrLibrary::defaultDirectory()` instead would perform the install the user did not ask for and put files they never chose into their own browser listing. The cache is reconstructible from bytes that are already in the binary, so deleting it costs nothing.
+
+**Everything here is off the audio thread.** Directory scans, hashing and the one small write happen on the message thread (or a session-load thread), exactly like the existing IR file I/O — see [Real-time safety](#real-time-safety). Nothing in `processBlock()` reaches any of it.
+
 ## Parameter smoothing
 
 - **LoCut** and **HiCut** are filter cutoff frequencies. Recomputing IIR coefficients involves trig calls, so these are not cheap to interpolate per sample; instead, each is smoothed with a `juce::SmoothedValue<float, ValueSmoothingTypes::Multiplicative>` (multiplicative smoothing suits frequencies, which are perceived logarithmically) and the filter coefficients (when not bypassed) are recomputed once per block from the smoothed value - a standard real-time-safe compromise.

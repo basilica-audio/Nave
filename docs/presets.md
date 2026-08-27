@@ -37,8 +37,36 @@ loaded IR is left in place, and a notice names what was expected — no
 substitution, ever. That matters more than it sounds: a substituted cab would
 let the preset keep loading, keep looking correct, and quietly recall a
 different sound, which is precisely the failure a preset exists to prevent.
-The bundled library must be installed (Browse… > Install Library) for the
-three references above to resolve.
+### Where a reference resolves from (#45)
+
+Two sources, consulted in this order:
+
+1. **The user's IR library** — the folder the browser is pointed at, then the
+   default `Music/Nave/Impulse Responses`.
+2. **Nave's embedded copy** — the bundled cabinets are compiled into the
+   binary, so the three factory references above resolve **out of the box**,
+   with nothing installed and no button pressed. The bytes are written to
+   `<user app data>/Basilica Audio/Nave/Bundled Impulse Responses` and then
+   loaded through the same file path a browser selection uses.
+
+The ordering decides which **file** the slot points at, never which **sound**
+comes out: a digest can only match bytes equal to it, so when both sources hold
+a reference they hold the same audio. The user's own copy wins because it is
+the one they can see, move, rename or replace — preferring the invisible one
+would make **Install Library** pointless.
+
+**The embedded copy is a resolution source, not a library.** It is never
+scanned and never listed; it only ever answers an explicit reference to
+specific bytes. **Install Library** remains the single act that puts the
+bundled cabinets into the folder the browser lists, and its cache folder is
+deliberately not that folder — deleting the cache costs nothing, the next
+reference that needs a file re-creates it.
+
+A reference that neither source holds still behaves exactly as described
+above: parameters applied, slot untouched, notice raised, nothing substituted.
+A **retuned** bundled cabinet is exactly this case — its bytes changed, so its
+digest changed, and the preset misses loudly rather than recalling a different
+sound under the same name.
 
 ## v0.3.0 additions
 

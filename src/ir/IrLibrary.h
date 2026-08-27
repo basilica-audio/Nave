@@ -44,6 +44,25 @@ namespace basilica::ir
         // never asked for.
         juce::File defaultDirectory();
 
+        // Where Nave writes its own embedded IRs out to disk so that a preset
+        // reference can resolve against them without the user having pressed
+        // "Install Library" (issue #45, see src/ir/BundledIrSource.h):
+        // <user app data>/Basilica Audio/Nave/Bundled Impulse Responses
+        // (on macOS, <user app data> is ~/Library/Application Support).
+        //
+        // DELIBERATELY NOT defaultDirectory(). Writing there would silently
+        // perform the install the user did not ask for, which is precisely
+        // what src/ir/FactoryIrLibrary.h refuses to do, and it would put files
+        // the user never chose into the folder the browser lists. This
+        // location is NEVER SCANNED and never appears in the browser: it is a
+        // reconstructible cache of bytes that are already inside the binary,
+        // not a library. Deleting it costs nothing - the next reference that
+        // needs a file re-creates it.
+        //
+        // Like defaultDirectory(), a pure path computation that creates
+        // nothing.
+        juce::File bundledCacheDirectory();
+
         // True for the audio-file types the IR slots can actually load
         // (WAV/AIFF - the same "*.wav;*.aiff;*.aif" filter the editor's
         // direct file-chooser path uses), matched case-insensitively.

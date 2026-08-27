@@ -61,6 +61,22 @@ namespace
             { BinaryData::tightStack_json, BinaryData::tightStack_jsonSize },
         };
     }
+
+    // Nave's embedded IRs, indexed by the SHA-256 of their bytes (issue #45,
+    // src/ir/BundledIrSource.h).
+    //
+    // One instance for the whole process rather than one per plugin
+    // instance: building it hashes every embedded IR, and a host with eight
+    // Naves on eight tracks has no reason to do that eight times. Both
+    // statics have static storage duration and this one is initialised from
+    // the other, so the asset vector is constructed first and destroyed last
+    // - no lifetime hazard from the pointers BundledIrSource keeps into it.
+    // Function-local static initialisation is thread-safe in C++11 and later.
+    const basilica::ir::BundledIrSource& bundledIrSource()
+    {
+        static const basilica::ir::BundledIrSource source { nave::factoryIrAssets() };
+        return source;
+    }
 }
 
 //==============================================================================
@@ -527,30 +543,74 @@ void NaveAudioProcessor::refreshIrSearchRoots()
 
 juce::String NaveAudioProcessor::bundledDisplayNameForContentHash (const juce::String& contentHash) const
 {
-    // Built once, from the bytes actually embedded in this binary rather than
-    // from resources/irs/manifest.json, so the hint can never claim an IR is
+    // Answered from the bytes actually embedded in this binary rather than
+    // from resources/irs/manifest.json, so a message can never claim an IR is
     // "part of the bundled library" on the strength of a manifest entry whose
-    // audio did not ship. Nine small files; the map is tiny and immutable.
-    static const std::map<juce::String, juce::String> bundledDigests = []
+    // audio did not ship.
+    return bundledIrSource().displayNameForContentHash (contentHash);
+}
+
+juce::File NaveAudioProcessor::getBundledIrCacheDirectory() const
+{
+    return bundledIrCacheDirectoryOverride != juce::File()
+               ? bundledIrCacheDirectoryOverride
+               : basilica::ir::IrLibrary::bundledCacheDirectory();
+}
+
+void NaveAudioProcessor::setBundledIrCacheDirectoryForTests (const juce::File& folder)
+{
+    bundledIrCacheDirectoryOverride = folder;
+}
+
+NaveAudioProcessor::ResolvedIrReference
+NaveAudioProcessor::resolveIrReference (const juce::String& contentHash, const juce::String& currentIrPath)
+{
+    const auto wanted = contentHash.trim().toLowerCase();
+
+    // Nothing to resolve. Kept separate from notFound because they mean
+    // different things to the caller: this raises no notice, a miss does.
+    if (wanted.isEmpty())
+        return { IrReferenceSource::notReferenced, {} };
+
+    // A digest that is not a digest cannot be satisfied by anything, so it is
+    // a MISS rather than "no reference" - the preset meant to name an IR and
+    // failed to, and saying so is more honest than pretending it named
+    // nothing. Validated here as well as inside both sources so the outcome
+    // does not depend on which source is asked first.
+    if (wanted.length() != 64 || ! wanted.containsOnly ("0123456789abcdef"))
+        return { IrReferenceSource::notFound, {} };
+
+    // Already exactly these bytes: leave the convolver alone rather than
+    // reloading it, so recalling a preset for the cab that is already up
+    // costs nothing and cannot glitch.
+    if (currentIrPath.isNotEmpty())
     {
-        std::map<juce::String, juce::String> digests;
+        const juce::File current (currentIrPath);
 
-        for (const auto& asset : nave::factoryIrAssets())
-        {
-            const juce::String fileName (asset.fileName);
+        if (basilica::presets::contentHashOfFile (current) == wanted)
+            return { IrReferenceSource::alreadyLoaded, current };
+    }
 
-            if (! fileName.endsWithIgnoreCase (".wav") || asset.data == nullptr || asset.dataSize <= 0)
-                continue;
+    refreshIrSearchRoots();
 
-            const auto hash = juce::SHA256 (asset.data, static_cast<size_t> (asset.dataSize)).toHexString().toLowerCase();
-            digests[hash] = basilica::presets::displayNameForIrFileName (fileName);
-        }
+    // PRECEDENCE, decided in #45: the user's library first, Nave's embedded
+    // copy only after it.
+    //
+    // The ordering is not a tie-break between two different sounds - a digest
+    // can only match bytes equal to it, so when both sources hold it they
+    // hold the same audio, and there is no "mismatch between the sources" to
+    // surface. What the ordering decides is which FILE the slot ends up
+    // pointing at, and the user's own copy is the right answer there: it is
+    // the one they can see in the browser, replace, move or audition, and
+    // preferring the invisible one would make "Install Library" pointless.
+    if (const auto fromLibrary = irContentIndex.findByContentHash (wanted); fromLibrary.existsAsFile())
+        return { IrReferenceSource::library, fromLibrary };
 
-        return digests;
-    }();
+    if (const auto materialised = bundledIrSource().materialiseByContentHash (wanted, getBundledIrCacheDirectory());
+        materialised.existsAsFile())
+        return { IrReferenceSource::bundled, materialised };
 
-    const auto found = bundledDigests.find (contentHash.toLowerCase());
-    return found == bundledDigests.end() ? juce::String() : found->second;
+    return { IrReferenceSource::notFound, {} };
 }
 
 void NaveAudioProcessor::capturePresetIrReferences (juce::DynamicObject& presetObject)
@@ -606,8 +666,6 @@ void NaveAudioProcessor::applyPresetIrReferences (const juce::var& presetObject)
         return;
     }
 
-    refreshIrSearchRoots();
-
     juce::StringArray missingDescriptions;
     bool anyMissingIsBundled = false;
 
@@ -619,19 +677,29 @@ void NaveAudioProcessor::applyPresetIrReferences (const juce::var& presetObject)
         if (! reference.isPresent())
             return;
 
-        // Already exactly these bytes: leave the convolver alone rather than
-        // reloading it, so recalling a preset for the cab that is already up
-        // costs nothing and cannot glitch.
-        if (currentPath.isNotEmpty()
-            && basilica::presets::contentHashOfFile (juce::File (currentPath)) == reference.contentHash)
-            return;
+        const auto resolved = resolveIrReference (reference.contentHash, currentPath);
 
-        const auto resolved = irContentIndex.findByContentHash (reference.contentHash);
-
-        if (resolved.existsAsFile())
+        switch (resolved.source)
         {
-            if (isSlotA ? loadImpulseResponseFromFile (resolved) : loadImpulseResponseFromFileB (resolved))
+            case IrReferenceSource::notReferenced:
+            case IrReferenceSource::alreadyLoaded:
                 return;
+
+            case IrReferenceSource::library:
+            case IrReferenceSource::bundled:
+                if (isSlotA ? loadImpulseResponseFromFile (resolved.file)
+                            : loadImpulseResponseFromFileB (resolved.file))
+                    return;
+
+                // The file was found and hashes correctly but would not
+                // decode (a WAV variant the reader does not handle, a
+                // truncation that happened between the hash and the read).
+                // Falls through to the miss path rather than being swallowed:
+                // a slot that did not get filled must say so.
+                break;
+
+            case IrReferenceSource::notFound:
+                break;
         }
 
         // MISS. Decision D2: the parameters have already been applied, the
@@ -674,8 +742,16 @@ void NaveAudioProcessor::applyPresetIrReferences (const juce::var& presetObject)
                       + " "
                       + TRANS ("Its settings were loaded and the IR slots were left as they were.");
 
+    // A bundled digest reaching the miss path no longer means "you have not
+    // installed the library" - since #45 it resolves from the embedded copy
+    // whether or not the library is installed. The only way to get here with
+    // one of Nave's own IRs is that the embedded copy could not be written to
+    // disk (an unwritable or full location), so the hint points at the other
+    // route to the same files rather than at a step the user has effectively
+    // already had done for them.
     if (anyMissingIsBundled)
-        presetIrNotice += " " + TRANS ("Use Browse... and then Install Library to add Nave's bundled cabinets.");
+        presetIrNotice += " " + TRANS ("Nave could not write out its own copy of them. "
+                                        "Use Browse... and then Install Library to add Nave's bundled cabinets.");
 
     publish();
 }
