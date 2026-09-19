@@ -4,11 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The x86_64 format-validation step below deliberately does not run on the
-  # pull_request path (see its own comment for the cost arithmetic). This makes
-  # it runnable on demand against any branch, which is how its runtime can be
-  # measured against this repo's build - the same shape Crypta uses (see
-  # basilica-audio/Crypta PR #110).
+  # The x86_64 format-validation step below now runs on every pull_request too
+  # (basilica-audio/Crypta#125): this repo is public, so GitHub-hosted
+  # macOS/Windows runner minutes are billed at zero regardless of event, and
+  # the step itself costs on the order of a minute of wall clock (see its own
+  # comment). workflow_dispatch stays for running it on demand against any
+  # branch.
   workflow_dispatch:
 
 concurrency:
@@ -29,13 +30,14 @@ jobs:
         os: [macos-latest, windows-latest]
         include:
           - os: macos-latest
-            # 35 -> 40 with the x86_64 format-validation step (issue #52). The
-            # step runs only on push/workflow_dispatch and carries its own
+            # 35 -> 40 with the x86_64 format-validation step (issue #52),
+            # now running on every event (issue #64/#125). It carries its own
             # 15-minute step timeout; 40 keeps the job's bound meaningful
             # rather than letting the step's bound become the real one. The
-            # identical step measured 3 min 26 s in Crypta (the same engine
-            # family and plugin surface - basilica-audio/Crypta PR #110)
-            # against a job that was otherwise well inside 35.
+            # identical step measured 3 min 26 s pre-#123/#124 and ~48 s after,
+            # in Crypta (the same engine family and plugin surface -
+            # basilica-audio/Crypta PR #110, PR #124) against a job that was
+            # otherwise well inside 35.
             timeout: 40
           - os: windows-latest
             timeout: 35
@@ -308,25 +310,34 @@ jobs:
         # of the shipped Universal Binary had no format validation at all.
         # The script asserts the x86_64 slice is present (lipo -archs), thins
         # a COPY of each bundle to x86_64 and puts it through pluginval
-        # strictness 10 (VST3 under `arch -x86_64`, the AU via the x86_64
-        # AUHostingServiceXPC) and `auval -strict` - see its header for why
-        # thinning, not `arch`, is what selects the slice.
+        # strictness 10 (VST3 and AU both under `arch -x86_64`, so the AU is
+        # hosted in-process the way an Intel Mac hosts it - issue #64, the
+        # basilica-audio/Crypta#123 twin) and `arch -x86_64 auval -strict` -
+        # see the script's header for why thinning, not `arch`, is what
+        # selects the slice, and why `arch` is the hosting-mode control.
         #
-        # Not on every pull request, and the reason is measured runtime rather
-        # than preference: the identical step costs 3 min 26 s in Crypta
-        # (basilica-audio/Crypta PR #110) on the most expensive minute in the
-        # fleet (macOS bills at a 10x multiplier), against a defect class -
-        # plugin-format conformance of the Intel slice - that changes far
-        # less often than the DSP does. Placing it inside this job rather
-        # than in a scheduled workflow of its own is what makes it affordable:
-        # it reuses the Universal Binary this job already built, so there is
-        # no second multi-minute build to pay for.
+        # Runs on every pull request (issue #64/basilica-audio/Crypta#125). It
+        # used to run only on push/workflow_dispatch, and that restriction was
+        # a cost decision: PR #110 measured this step at 3 min 26 s against a
+        # job believed to bill at a 10x multiplier for macOS. Both premises
+        # turned out to be wrong, per basilica-audio/Crypta#125: this
+        # repository is public, so GitHub-hosted runner minutes are billed at
+        # zero regardless of OS or event, and moving the AU pass to
+        # arch-matched, in-process hosting (issue #64) dropped the identical
+        # step in Crypta from 3 min 26 s to ~48 s of wall clock. With the cost
+        # at zero billable minutes and well under a minute of wall clock,
+        # there is no trade left to decline.
         #
-        # The 15-minute step bound derives from that same measurement: 3 min
-        # 26 s observed, plus headroom for a cold Rosetta install on a fresh
+        # Placing it inside this job rather than in a scheduled workflow of its
+        # own is what makes it affordable at all: it reuses the Universal
+        # Binary this job already built, so there is no second multi-minute
+        # build to pay for.
+        #
+        # The 15-minute step bound is unchanged: 3 min 26 s observed
+        # pre-#64/#123, plus headroom for a cold Rosetta install on a fresh
         # image, which the script performs itself when needed.
         timeout-minutes: 15
-        if: runner.os == 'macOS' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: runner.os == 'macOS'
         shell: bash
         env:
           VST3_PATH: ${{ steps.artefacts.outputs.vst3_path }}

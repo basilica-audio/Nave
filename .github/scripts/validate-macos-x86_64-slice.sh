@@ -36,20 +36,57 @@
 #       native arm64  -> "Unable to load VST-3 plug-in file", *** FAILED
 #       arch -x86_64  -> SUCCESS
 #
-# 2. auval, and pluginval's AU path. Neither is steerable with `arch`, and the
-#    reason is structural: an AUv2 .component is not loaded into the host's
-#    address space at all. macOS hosts it out-of-process in an XPC service, and
-#    ships one per architecture:
-#       /System/Library/Frameworks/AudioToolbox.framework/XPCServices/
-#         AUHostingServiceXPC.xpc        -> x86_64 only
-#         AUHostingServiceXPC_arrow.xpc  -> arm64e only
-#    The system picks the one matching the *component's* slices. The caller's
-#    own architecture is irrelevant. Measured (Crypta#108) against an
-#    x86_64-only component, all three of these SUCCEED:
+# 2. auval, and pluginval's AU path. Neither is steerable with `arch` in the
+#    sense of *slice selection*, and the reason is structural: which slice runs
+#    is decided by the component's own slices, not by the caller. Measured
+#    against an x86_64-only component, all three of these SUCCEED:
 #       auval  (native arm64) | arch -x86_64 auval | pluginval (native arm64)
-#    So `arch -x86_64 auval` is not a control. It looks like one, which is worse
-#    than having none - it is exactly the "appears to validate Intel while
-#    silently validating arm64" failure this class asks us not to ship.
+#    So `arch -x86_64 auval` is not a slice control. It looks like one, which is
+#    worse than having none - it is exactly the "appears to validate Intel while
+#    silently validating arm64" failure this class asks us not to ship. The
+#    thinned bundle below is the slice control, and it stays the slice control.
+#
+#    What `arch` DOES decide for an AU is the *hosting mode*, and
+#    basilica-audio/Crypta#123 established by measurement that this is the
+#    difference between validating the configuration Intel users run and
+#    validating one nobody runs:
+#
+#      - Arch-MISMATCHED (x86_64-only component, native arm64 validator). The
+#        component cannot be loaded into the validator's address space at all,
+#        so AudioToolbox hosts it out-of-process in
+#        /System/Library/Frameworks/AudioToolbox.framework/XPCServices/
+#          AUHostingServiceXPC.xpc        -> x86_64 only
+#          AUHostingServiceXPC_arrow.xpc  -> arm64e only
+#        and bridges every AudioUnitSetParameter / AudioUnitSetProperty / render
+#        call across XPC. Sampled mid-run: no mapping of the component in the
+#        validator, one live AUHostingServiceXPC process.
+#
+#      - Arch-MATCHED (x86_64-only component, `arch -x86_64` validator). The
+#        component is dlopen()ed into the validator itself. Sampled mid-run:
+#        the component's __TEXT/__DATA_CONST/__LINKEDIT mapped into the
+#        validator's address space, and no AUHostingServiceXPC process at all.
+#
+#    A real Intel Mac runs an x86_64 host against an x86_64 AU: arch-matched,
+#    in-process. An Apple Silicon Mac loads this Universal Binary's arm64 slice:
+#    also arch-matched, also in-process. The arch-mismatched XPC configuration
+#    is a state the shipped artefact cannot be in on either machine - it exists
+#    only as a side effect of thinning the bundle to pin the slice.
+#
+#    It is also not a neutral side effect. Measured on the same byte-identical
+#    x86_64 bundle (this repo carries the same script and the same defect as
+#    basilica-audio/Crypta#123, which is where these measurements come from):
+#    0/26 SUCCESS in-process, against 8 failures in 31 runs out-of-process, the
+#    failures landing in the tests that read a parameter back after writing it
+#    across the bridge ("Plugin state restoration", "Parameter thread safety").
+#    Crypta's v0.4.1 release run's `Trace/BPT trap: 5` came out of that bridge
+#    (issue #64). Running the AU pass arch-mismatched therefore does not test
+#    the Intel slice more strictly; it tests a different, non-shipping
+#    transport, and reports its flakiness as a defect in the plugin.
+#
+#    So the AU pass and auval below run under `arch -x86_64`. Strictness stays
+#    at 10, the AU stays in the sweep, and the x86_64-thinned bundle is still
+#    what pins the slice - only the hosting mode changes, to the one that
+#    ships.
 #
 # The artefact is the steering wheel, not the tool
 # ------------------------------------------------
@@ -65,6 +102,13 @@
 # pass wearing an x86_64 label. If a future macOS made `arch -x86_64` a no-op,
 # the VST3 pass would fail loudly with "Unable to load VST-3 plug-in file"
 # rather than quietly going green on the wrong slice.
+#
+# The hosting mode is asserted the same way, rather than assumed from `arch`
+# (see assert_no_out_of_process_hosting below): the AU pass is watched while it
+# runs, and an AUHostingServiceXPC process appearing at any point during it
+# fails the step. That is the observable signature of the arch-mismatched
+# bridge, so this gate cannot silently drift back into validating a transport
+# that does not ship.
 #
 # Coverage and contract are two different things (a distinction Crypta's
 # PR #106 had to draw about its own demonstration): this widens *coverage* to
@@ -186,6 +230,40 @@ run_pluginval() {
   "$ASSERT" "$log" "$rc" "$label"
 }
 
+# Watches for the observable signature of arch-mismatched, out-of-process AU
+# hosting while a validation runs: a live AUHostingServiceXPC process. In the
+# arch-matched configuration this script now uses, the component is dlopen()ed
+# into the validator itself and no hosting service is ever started, so a single
+# sighting means the gate has drifted back onto the XPC bridge - a transport the
+# shipped Universal Binary never uses on either architecture (basilica-audio/Crypta#123).
+#
+# Empirical rather than inferred from `arch`, for the same reason the thinned
+# bundle is what pins the slice: a wrapper that is *assumed* to steer is exactly
+# the kind of control that keeps looking like one after it stops working.
+#
+# Writes a marker file rather than signalling the parent directly, because it
+# runs as a background subshell and cannot set a variable the parent can read.
+watch_for_out_of_process_hosting() {
+  local marker="$1" stop_flag="$2"
+
+  # Two independent matchers, because `pgrep -l` prints the kernel's 15-char
+  # truncation of the name ("AUHostingServic") and it should not matter whether
+  # a future pgrep matches the truncated form or the full one: -x matches the
+  # process name, -f the full argument vector, and either sighting counts.
+  while [ ! -f "$stop_flag" ]; do
+    if pgrep -x AUHostingServiceXPC >/dev/null 2>&1 \
+       || pgrep -f 'AUHostingServiceXPC.xpc/Contents/MacOS' >/dev/null 2>&1; then
+      {
+        pgrep -lx AUHostingServiceXPC 2>/dev/null
+        pgrep -lf 'AUHostingServiceXPC.xpc/Contents/MacOS' 2>/dev/null
+      } > "$marker"
+      [ -s "$marker" ] || echo "AUHostingServiceXPC" > "$marker"
+      return
+    fi
+    sleep 1
+  done
+}
+
 VST3_START=$(date +%s)
 run_pluginval "macos-x86_64-vst3" "$VST3_X86" arch -x86_64
 VST3_ELAPSED=$(( $(date +%s) - VST3_START ))
@@ -207,22 +285,43 @@ INSTALLED_ARCHS=$(lipo -archs "${INSTALLED}/Contents/MacOS/$(basename "${AU_X86%
 [ "$INSTALLED_ARCHS" = "x86_64" ] \
   || fail "the installed component reports '${INSTALLED_ARCHS}', expected 'x86_64'. auval would validate the wrong slice."
 
-# Deliberately NOT wrapped in `arch -x86_64`. The component runs in
-# AUHostingServiceXPC (x86_64) out-of-process regardless of this process's
-# architecture, so wrapping it would translate the validator for no gain and
-# would imply the wrapper is what selects the slice. It is not; the thinned
-# bundle asserted above is.
+# Wrapped in `arch -x86_64` for the hosting mode, NOT for the slice - the
+# thinned bundle asserted just above is still the only thing that pins the
+# slice. Matching the validator's architecture to the component's is what makes
+# macOS load it in-process, which is how both an Intel Mac and an Apple Silicon
+# Mac load this plugin's AU. See the header for the measurements behind that
+# (basilica-audio/Crypta#123, issue #64).
+HOSTING_MARKER="${WORK_DIR}/out-of-process-hosting-seen"
+HOSTING_STOP="${WORK_DIR}/hosting-watch-stop"
+rm -f "$HOSTING_MARKER" "$HOSTING_STOP"
+
+watch_for_out_of_process_hosting "$HOSTING_MARKER" "$HOSTING_STOP" &
+HOSTING_WATCHER=$!
+
 AU_START=$(date +%s)
-run_pluginval "macos-x86_64-au" "$INSTALLED"
+run_pluginval "macos-x86_64-au" "$INSTALLED" arch -x86_64
 AU_ELAPSED=$(( $(date +%s) - AU_START ))
-note "pluginval x86_64 AU finished in ${AU_ELAPSED}s"
+
+touch "$HOSTING_STOP"
+wait "$HOSTING_WATCHER" 2>/dev/null || true
+
+if [ -f "$HOSTING_MARKER" ]; then
+  note "saw: $(cat "$HOSTING_MARKER")"
+  fail "an AUHostingServiceXPC process was alive during the AU pass, so the component was hosted out-of-process across the XPC bridge instead of in the validator itself. That is not the configuration this plugin ships into on any machine, and its failures are not this plugin's (basilica-audio/Crypta#123, issue #64). Refusing to report a verdict from it."
+fi
+
+note "pluginval x86_64 AU finished in ${AU_ELAPSED}s (in-process: no AUHostingServiceXPC seen)"
 
 # --- 4. auval. ----------------------------------------------------------------
 AUVAL_LOG="${LOG_DIR}/macos-x86_64-auval.log"
 AUVAL_START=$(date +%s)
-echo "::group::auval (x86_64 slice): aufx Nave Yvsv"
+echo "::group::auval (x86_64 slice, arch-matched): aufx Nave Yvsv"
 set +e
-auval -strict -v aufx Nave Yvsv 2>&1 | tee "$AUVAL_LOG"
+# Same reasoning as the AU pass above: `arch -x86_64` does not choose the slice
+# (the installed x86_64-only component does), it chooses the hosting mode, and
+# an arch-matched auval hosts the component in-process exactly as an Intel Mac
+# does.
+arch -x86_64 auval -strict -v aufx Nave Yvsv 2>&1 | tee "$AUVAL_LOG"
 AUVAL_RC=${PIPESTATUS[0]}
 set -e
 echo "::endgroup::"
@@ -247,7 +346,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "| mechanism | \`lipo -thin x86_64\` of the shipped Mach-O, ad-hoc re-signed |"
     echo "| translated | \`uname -m=${CHILD_ARCH}\`, \`sysctl.proc_translated=${CHILD_TRANSLATED}\` |"
     echo "| pluginval VST3 (strictness ${STRICTNESS}, \`arch -x86_64\`) | ${VST3_ELAPSED}s |"
-    echo "| pluginval AU (strictness ${STRICTNESS}, XPC-hosted x86_64) | ${AU_ELAPSED}s |"
+    echo "| pluginval AU (strictness ${STRICTNESS}, in-process x86_64) | ${AU_ELAPSED}s |"
     echo "| auval \`-strict\` | ${AUVAL_ELAPSED}s |"
     echo "| total | ${TOTAL}s |"
   } >> "$GITHUB_STEP_SUMMARY"
